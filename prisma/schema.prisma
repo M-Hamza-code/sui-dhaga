@@ -1,0 +1,355 @@
+// Sui Dhaga — Digital Management System
+// Prisma schema
+//
+// Step 1 established the original architecture. Step 9 (see the Step 8
+// audit) extended it to match the two authoritative design/requirement
+// files (sui-dhaga-design-brief.md + the corrected English/LTR UI mockup)
+// wherever they explicitly superseded the original rules. What changed
+// and what didn't:
+//
+// STILL TRUE (unchanged since Step 1):
+//   - Measurement is strictly one-to-one with Customer (customerId
+//     @unique). This is the customer's CURRENT/latest measurement,
+//     upserted in place — there is still no history table for it and no
+//     versioning of this row itself.
+//   - Customer uses soft delete via deletedAt.
+//   - Pocket and Patti/Placket are modeled via the shared DesignOption
+//     lookup table. (Patti has no home in the new design files' style
+//     groups — its column and data are kept, not dropped; see Step 8
+//     audit, open question §8.3.)
+//
+// CHANGED IN STEP 9 — the design files require these, which override the
+// original Step 1 rule that forbade any Order/Measurement relationship:
+//   - An Order may now have a "default" MeasurementSnapshot: an
+//     independent, frozen COPY of measurement values, never linked back to
+//     the live Measurement row and never mutated by later changes to it.
+//   - An Order has one or more OrderItems (one row per physical suit). An
+//     OrderItem inherits the Order's default snapshot unless it has its
+//     own snapshot override ("different measurements for this suit").
+//   - This is NOT measurement history/versioning on the Measurement model
+//     itself — Measurement is still exactly one current row per customer.
+//     The snapshot is a separate, purpose-built entity for freezing what
+//     was actually used on a given order/suit.
+//   - OrderStatus gained NEW, STITCHING, READY (the four-stage workflow
+//     from the design brief). PENDING is kept — not dropped, Postgres
+//     enum values can't be safely removed — but is no longer written by
+//     new code; existing PENDING rows were migrated to NEW in this step.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Enums — confirmed, fixed option sets
+// ─────────────────────────────────────────────────────────────────────────
+
+enum SuitType {
+  SIMPLE
+  GARAM_SILAI
+  DESIGNING
+  DOUBLE_STITCH
+  BARABAR_SILAI
+}
+
+enum CollarType {
+  POINT
+  FRENCH
+  TIE
+}
+
+enum BainType {
+  FULL_BAIN
+  HALF_GOL_BAIN
+  CUT_BAIN
+}
+
+enum CuffType {
+  NOK_DAR
+  CUT
+  GOL
+  FOLD
+}
+
+enum GheraType {
+  GOL
+  SEEDHA
+}
+
+enum OrderStatus {
+  /// Legacy Phase-1 status, kept for backward compatibility (Postgres enum
+  /// values cannot be safely dropped). No longer written by new code —
+  /// existing PENDING rows were migrated to NEW in the Step 9 migration.
+  PENDING
+  NEW
+  STITCHING
+  READY
+  DELIVERED
+}
+
+enum DesignOptionCategory {
+  POCKET
+  PATTI
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Core models
+// ─────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  customersCreated   Customer[]    @relation("CustomerCreatedBy")
+  ordersCreated      Order[]       @relation("OrderCreatedBy")
+  measurementsEdited Measurement[] @relation("MeasurementUpdatedBy")
+
+  @@map("users")
+}
+
+model Customer {
+  id             String    @id @default(cuid())
+  customerCode   String    @unique // e.g. SD-000124 — auto-generated, immutable
+  name           String
+  phonePrimary   String
+  phoneSecondary String?
+  address        String?
+
+  // Soft delete: null = active customer. Never hard-deleted.
+  deletedAt DateTime?
+
+  createdById String?
+  createdBy   User?   @relation("CustomerCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Exactly one measurement per customer — enforced by @unique on Measurement.customerId
+  measurement Measurement?
+
+  // Unlimited independent orders per customer
+  orders Order[]
+
+  @@index([phonePrimary])
+  @@index([name])
+  @@index([deletedAt])
+  @@map("customers")
+}
+
+model Measurement {
+  id         String   @id @default(cuid())
+  customerId String   @unique // enforces strict one-to-one with Customer
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  // Shirt / Kameez
+  length   Decimal? @db.Decimal(6, 2)
+  shoulder Decimal? @db.Decimal(6, 2)
+  sleeve   Decimal? @db.Decimal(6, 2)
+  neck     Decimal? @db.Decimal(6, 2)
+  chest    Decimal? @db.Decimal(6, 2)
+  waist    Decimal? @db.Decimal(6, 2)
+  hem      Decimal? @db.Decimal(6, 2) // گھیرا measurement value (distinct from Order.gheraType style)
+
+  // Shalwar
+  shalwarLength     Decimal? @db.Decimal(6, 2)
+  pancha            Decimal? @db.Decimal(6, 2)
+  shalwarPocket     Boolean?
+  shalwarGheraReady Decimal? @db.Decimal(6, 2)
+
+  note String?
+
+  updatedById String?
+  updatedBy   User?   @relation("MeasurementUpdatedBy", fields: [updatedById], references: [id])
+
+  updatedAt DateTime @updatedAt
+
+  @@map("measurements")
+}
+
+model Order {
+  id          String   @id @default(cuid())
+  orderNumber String   @unique // e.g. ORD-000045
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id])
+
+  orderDate    DateTime
+  deliveryDate DateTime?
+
+  suitType   SuitType
+  collarType CollarType
+  bainType   BainType
+  cuffType   CuffType
+  gheraType  GheraType
+
+  pocketOptionId String?
+  pocketOption   DesignOption? @relation("OrderPocketOption", fields: [pocketOptionId], references: [id])
+
+  pattiOptionId String?
+  pattiOption   DesignOption? @relation("OrderPattiOption", fields: [pattiOptionId], references: [id])
+
+  // Step 9: the order's default measurement snapshot — an independent
+  // frozen copy, not a link to the live Measurement row. Every OrderItem
+  // that doesn't have its own override snapshot inherits this one.
+  // Nullable so historical/backfilled orders without any recoverable
+  // measurement data remain valid.
+  defaultMeasurementSnapshotId String?              @unique
+  defaultMeasurementSnapshot   MeasurementSnapshot? @relation("OrderDefaultSnapshot", fields: [defaultMeasurementSnapshotId], references: [id])
+
+  // Step 9: one row per physical suit in this order. Multi-suit orders
+  // have more than one; every existing pre-Step-9 order was backfilled
+  // with exactly one.
+  items OrderItem[]
+
+  totalAmount   Decimal @default(0) @db.Decimal(10, 2)
+  advanceAmount Decimal @default(0) @db.Decimal(10, 2)
+  // Always recalculated server-side as (totalAmount - advanceAmount).
+  // Never accepted as direct user input — see /src/lib/money.ts (Step 2+).
+  balanceAmount Decimal @default(0) @db.Decimal(10, 2)
+
+  status OrderStatus @default(PENDING)
+
+  createdById String?
+  createdBy   User?   @relation("OrderCreatedBy", fields: [createdById], references: [id])
+
+  note String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([status, deliveryDate])
+  @@map("orders")
+}
+
+// Configurable lookup table for design options whose exact labels are not
+// yet confirmed (Pocket, Patti/Placket). Adding/renaming options later is a
+// data change (seed/edit rows), not a schema migration.
+model DesignOption {
+  id        String               @id @default(cuid())
+  category  DesignOptionCategory
+  code      String // stable internal key, e.g. "POCKET_A" — placeholder until confirmed
+  label     String // display label shown in the UI — placeholder until confirmed
+  sortOrder Int                  @default(0)
+  isActive  Boolean              @default(true)
+
+  pocketOrders Order[] @relation("OrderPocketOption")
+  pattiOrders  Order[] @relation("OrderPattiOption")
+
+  @@unique([category, code])
+  @@index([category, isActive])
+  @@map("design_options")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Step 9 additions — see the header comment for what this changes and why.
+// ─────────────────────────────────────────────────────────────────────────
+
+// An independent, frozen copy of the 11 measurement values as they stood
+// at the moment an order (or one specific suit within it) was saved.
+// Deliberately has NO foreign key back to Measurement — once written, a
+// snapshot is never updated, including when the customer's live/current
+// Measurement later changes. Reused for two distinct purposes (see Order
+// and OrderItem below): the order's shared default, and a per-suit
+// override for "different measurements for this suit."
+model MeasurementSnapshot {
+  id String @id @default(cuid())
+
+  // Shirt / Kameez — same fields as Measurement, intentionally duplicated
+  // rather than referenced, because a snapshot must survive independently
+  // of any future change to the live Measurement row.
+  length   Decimal? @db.Decimal(6, 2)
+  shoulder Decimal? @db.Decimal(6, 2)
+  sleeve   Decimal? @db.Decimal(6, 2)
+  neck     Decimal? @db.Decimal(6, 2)
+  chest    Decimal? @db.Decimal(6, 2)
+  waist    Decimal? @db.Decimal(6, 2)
+  hem      Decimal? @db.Decimal(6, 2)
+
+  // Shalwar
+  shalwarLength     Decimal? @db.Decimal(6, 2)
+  pancha            Decimal? @db.Decimal(6, 2)
+  shalwarPocket     Boolean?
+  shalwarGheraReady Decimal? @db.Decimal(6, 2)
+
+  note String?
+
+  // True only for snapshots the Step 9 migration reconstructed for
+  // pre-existing orders, which never had a real snapshot captured at the
+  // time. Those are a best-effort copy of the customer's CURRENT
+  // measurement at migration time — NOT a guaranteed record of what was
+  // actually used on the original order. False for every snapshot written
+  // by order/suit creation going forward.
+  isBackfilled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  // Each snapshot is created for exactly one purpose and is referenced by
+  // at most one of these — never shared across multiple orders/items.
+  order     Order?     @relation("OrderDefaultSnapshot")
+  orderItem OrderItem? @relation("OrderItemSnapshotOverride")
+
+  @@map("measurement_snapshots")
+}
+
+// One row per physical suit within an Order. A multi-suit order has more
+// than one; every order that existed before Step 9 was backfilled with
+// exactly one (position 1). Style selections (suit type, collar, bain,
+// cuff, pocket, ghera) stay on Order, shared across all of its items —
+// they are not duplicated here.
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  // 1-based position within the order ("suit 1", "suit 2", ...).
+  position Int
+
+  // null = inherits Order.defaultMeasurementSnapshot ("different
+  // measurements for this suit" is off for this item). Set only when that
+  // toggle is on for this specific suit.
+  measurementSnapshotId String?              @unique
+  measurementSnapshot   MeasurementSnapshot? @relation("OrderItemSnapshotOverride", fields: [measurementSnapshotId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([orderId, position])
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// Shop-wide configuration for the future Settings screen. Phase 1 is a
+// single shop on a single machine — deliberately one row, not a
+// multi-tenant settings-per-shop table. `singleton` is a unique boolean
+// used purely to make Postgres reject a second row: application code
+// always upserts using { singleton: true } as the unique key.
+model ShopSettings {
+  id String @id @default(cuid())
+
+  singleton Boolean @unique @default(true)
+
+  name    String
+  phone   String
+  address String?
+  tagline String?
+
+  // Suit-type -> default price, keyed by the existing SuitType enum
+  // values as strings (e.g. {"SIMPLE": "1200", "DESIGNING": "2000"}).
+  // A full side table would be overkill for a fixed 5-value enum.
+  defaultPrices Json @default("{}")
+
+  // Percentage (0-100), used later to suggest a default advance amount.
+  // Decimal, not Int/Float, so it can hold e.g. 50.00 without rounding.
+  defaultAdvancePercent Decimal? @db.Decimal(5, 2)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("shop_settings")
+}

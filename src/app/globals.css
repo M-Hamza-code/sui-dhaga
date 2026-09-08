@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Font families are supplied by next/font/google in src/app/layout.tsx
+   (as --font-sans / --font-naskh / --font-nastaliq CSS variables) and
+   consumed through tailwind.config.ts's fontFamily tokens — nothing to
+   declare here. */
