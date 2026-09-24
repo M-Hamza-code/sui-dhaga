@@ -50,9 +50,15 @@ export function formatOrderNumber(orderNumber: string): string {
  * Coarse "2 days ago" / "3 weeks ago" style relative time, matching the
  * recency language used throughout the design brief and mockup (search
  * results, saved-measurement age).
+ *
+ * Accepts a string too: search results reaching this from
+ * /api/search/customers arrive as JSON (Date -> ISO string over the
+ * wire), while server-rendered pages still pass a real Prisma Date —
+ * both are normalized here rather than pushed onto every caller.
  */
-export function formatRelativeTime(date: Date): string {
-  const diffDays = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24));
+export function formatRelativeTime(date: Date | string): string {
+  const dateObj = date instanceof Date ? date : new Date(date);
+  const diffDays = Math.floor((Date.now() - dateObj.getTime()) / (1000 * 60 * 60 * 24));
 
   if (diffDays <= 0) return "today";
   if (diffDays === 1) return "1 day ago";

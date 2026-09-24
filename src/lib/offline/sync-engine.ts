@@ -25,6 +25,7 @@ import type {
   LocalCustomer,
   LocalMeasurement,
   LocalOrder,
+  LocalOrderItem,
   SuitType,
   CollarType,
   BainType,
@@ -496,7 +497,7 @@ export async function enqueueCreateOrder(customerId: string, formData: FormData)
       cuffType: fields.cuffType as CuffType,
       gheraType: fields.gheraType as GheraType,
       pocketOptionId: fields.pocketOptionId || null,
-      pattiOptionId: null,
+      pattiOptionId: fields.pattiOptionId || null,
       defaultMeasurementSnapshotId: null,
       totalAmount: fields.totalAmount,
       advanceAmount: fields.advanceAmount,
@@ -524,6 +525,198 @@ export async function enqueueCreateOrder(customerId: string, formData: FormData)
   });
 
   return { queued: true, id };
+}
+
+// ── Order edit (Step 53) ────────────────────────────────────────────────
+
+export interface UpdateOrderPayload {
+  orderId: string;
+  customerId: string;
+  /** Same raw-FormData-fields shape as CreateOrderPayload — reconstructed into a real FormData at send time so applyOrderUpdateSync -> validateOrderInput() can be reused completely unchanged server-side. */
+  fields: Record<string, string>;
+  /** The local order's own `updatedAt` at the moment this edit was made — the server's conflict guard compares against this (same Phase 5 §H pattern UpdateCustomerPayload already uses). */
+  baseUpdatedAt: string;
+}
+
+/**
+ * Local-first order edit (Step 53). `formData` is exactly what
+ * OrderForm's own `new FormData(formElement)` produces in mode="edit" —
+ * the same field names validateOrderInput() already reads, so (like
+ * enqueueCreateOrder above) no separate field-by-field duplication of
+ * that shape is needed here.
+ *
+ * Only light, fast-feedback local checks are done, same scope as
+ * enqueueCreateOrder — full validation stays server-only. Updates the
+ * local order row and reconciles the local orderItems to the new
+ * quantity (deleting extras, updating survivors, adding new ones) so
+ * anything reading this order's local mirror while still unsynced sees
+ * the edit — the exact same "local storage is the source of truth while
+ * pending" principle every other local-first form in this app already
+ * follows. Local write + queue insertion happen in ONE Dexie
+ * transaction, same as every other enqueue function in this file.
+ */
+export async function enqueueUpdateOrder(customerId: string, orderId: string, formData: FormData): Promise<OrderEnqueueResult> {
+  if (!isOfflineDbAvailable()) {
+    return { queued: false, reason: "no-indexeddb" };
+  }
+
+  const fields: Record<string, string> = {};
+  formData.forEach((value, key) => {
+    if (typeof value === "string") fields[key] = value;
+  });
+
+  const REQUIRED = ["orderDate", "suitType", "collarType", "bainType", "cuffType", "gheraType", "totalAmount", "advanceAmount"];
+  for (const key of REQUIRED) {
+    if (!fields[key] || fields[key].trim() === "") {
+      return { queued: false, reason: "invalid-input", message: `${key} is required` };
+    }
+  }
+  if (!MONEY_REGEX.test(fields.totalAmount) || !MONEY_REGEX.test(fields.advanceAmount)) {
+    return { queued: false, reason: "invalid-input", message: "Total and Advance Amount must be valid non-negative numbers" };
+  }
+  const quantity = Math.max(1, Math.min(20, parseInt(fields.quantity, 10) || 1));
+
+  const db = getOfflineDb();
+  const idempotencyKey = generateIdempotencyKey();
+  const now = new Date().toISOString();
+  const balanceAmount = calculateBalance(fields.totalAmount, fields.advanceAmount);
+
+  await db.transaction("rw", [db.orders, db.orderItems, db.syncQueue], async () => {
+    const existingOrder = await db.orders.get(orderId);
+    // Same "no known local baseline" fallback UpdateCustomerPayload
+    // already uses — the server's own existence/version checks remain
+    // the authoritative guard regardless.
+    const baseUpdatedAt = existingOrder?.updatedAt ?? now;
+
+    // Table.update() is a silent no-op if this order isn't in the local
+    // mirror yet (e.g. opened for edit without ever having synced down)
+    // — harmless here for the same reason enqueueOrderStatusUpdate's own
+    // comment explains: the queue item below is what actually delivers
+    // the change, and nothing currently renders order specifics from
+    // this local row alone.
+    await db.orders.update(orderId, {
+      deliveryDate: fields.deliveryDate ? new Date(fields.deliveryDate).toISOString() : null,
+      suitType: fields.suitType as SuitType,
+      collarType: fields.collarType as CollarType,
+      bainType: fields.bainType as BainType,
+      cuffType: fields.cuffType as CuffType,
+      gheraType: fields.gheraType as GheraType,
+      pocketOptionId: fields.pocketOptionId || null,
+      pattiOptionId: fields.pattiOptionId || null,
+      totalAmount: fields.totalAmount,
+      advanceAmount: fields.advanceAmount,
+      balanceAmount,
+      note: fields.note || null,
+      updatedAt: now,
+      syncStatus: "pending",
+    });
+
+    // Reconcile local orderItems to the new quantity — mirrors the
+    // server-side reconciliation in order-update.ts so anything reading
+    // this order's local items (e.g. a future local-first Order Detail
+    // enhancement) already sees the right shape ahead of sync.
+    const existingItems = await db.orderItems.where("orderId").equals(orderId).toArray();
+    const extraIds = existingItems.filter((item) => item.position > quantity).map((item) => item.id);
+    if (extraIds.length > 0) {
+      await db.orderItems.bulkDelete(extraIds);
+    }
+    for (let position = 1; position <= quantity; position++) {
+      const existingItem = existingItems.find((item) => item.position === position);
+      const hasStyleOverride = position > 1 && fields[`item.${position}.suitType`] !== undefined;
+      const styleFields = hasStyleOverride
+        ? {
+            suitType: fields[`item.${position}.suitType`] as SuitType,
+            collarType: fields[`item.${position}.collarType`] as CollarType,
+            bainType: fields[`item.${position}.bainType`] as BainType,
+            cuffType: fields[`item.${position}.cuffType`] as CuffType,
+            gheraType: fields[`item.${position}.gheraType`] as GheraType,
+            pocketOptionId: fields[`item.${position}.pocketOptionId`] || null,
+          }
+        : { suitType: null, collarType: null, bainType: null, cuffType: null, gheraType: null, pocketOptionId: null };
+      const row: LocalOrderItem = {
+        id: existingItem?.id ?? crypto.randomUUID(),
+        orderId,
+        position,
+        // Never guessed locally — only a real sync ever assigns/changes
+        // this, same convention as orderNumber/customerCode.
+        measurementSnapshotId: existingItem?.measurementSnapshotId ?? null,
+        ...styleFields,
+        createdAt: existingItem?.createdAt ?? now,
+        updatedAt: now,
+        syncStatus: "pending",
+      };
+      await db.orderItems.put(row);
+    }
+
+    const payload: UpdateOrderPayload = { orderId, customerId, fields, baseUpdatedAt };
+    const item: SyncQueueItem = {
+      op: "UPDATE_ORDER",
+      payload,
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+      idempotencyKey,
+      createdAt: Date.now(),
+    };
+    await db.syncQueue.add(item);
+  });
+
+  return { queued: true, id: orderId };
+}
+
+// ── Order deletion (Step 55) ────────────────────────────────────────────
+
+export interface DeleteOrderPayload {
+  orderId: string;
+  customerId: string;
+}
+
+export interface OrderDeleteEnqueueResult {
+  queued: boolean;
+  reason?: "no-indexeddb";
+}
+
+/**
+ * Local-first order deletion (Step 55, Rule A: this NEVER touches the
+ * customer — only ever this one order's own local rows). Deletes the
+ * order and its items from Dexie immediately (optimistic — "local
+ * storage is the source of truth", same principle every other local-
+ * first write in this file already follows), then queues a DELETE_ORDER
+ * item. Local write + queue insertion happen in ONE Dexie transaction,
+ * same as every other enqueue function here — the order can never be
+ * "gone from the UI" without a queued item that will actually deliver
+ * that deletion to the server, even across a crash.
+ *
+ * No local pre-validation beyond "does IndexedDB exist" — there is
+ * nothing to validate about a delete request itself (no form fields),
+ * unlike create/update.
+ */
+export async function enqueueDeleteOrder(customerId: string, orderId: string): Promise<OrderDeleteEnqueueResult> {
+  if (!isOfflineDbAvailable()) {
+    return { queued: false, reason: "no-indexeddb" };
+  }
+
+  const db = getOfflineDb();
+  const idempotencyKey = generateIdempotencyKey();
+
+  await db.transaction("rw", [db.orders, db.orderItems, db.syncQueue], async () => {
+    await db.orders.delete(orderId);
+    await db.orderItems.where("orderId").equals(orderId).delete();
+
+    const payload: DeleteOrderPayload = { orderId, customerId };
+    const item: SyncQueueItem = {
+      op: "DELETE_ORDER",
+      payload,
+      status: "pending",
+      attempts: 0,
+      lastError: null,
+      idempotencyKey,
+      createdAt: Date.now(),
+    };
+    await db.syncQueue.add(item);
+  });
+
+  return { queued: true };
 }
 
 // ── Queue processor ─────────────────────────────────────────────────────
@@ -655,34 +848,58 @@ export async function processSyncQueue(): Promise<ProcessResult> {
             .catch(() => {});
         } else if (item.op === "CREATE_ORDER") {
           const payload = item.payload as CreateOrderPayload;
-          const data = outcome.data as { orderNumber?: string } | undefined;
+          const data = outcome.data as { orderNumber?: string; updatedAt?: string } | undefined;
           // The id never changes (Phase 6 §B) — only orderNumber
           // (previously null) and syncStatus are updated in place, same
-          // pattern as CREATE_CUSTOMER above.
-          if (data?.orderNumber) {
-            await db.orders.update(payload.id, { orderNumber: data.orderNumber, syncStatus: "synced" }).catch(() => {});
-          } else {
-            await db.orders.update(payload.id, { syncStatus: "synced" }).catch(() => {});
-          }
+          // pattern as CREATE_CUSTOMER above. Step 53 — updatedAt is also
+          // captured here now (when the server returns one) so this
+          // order's local row has a real, server-accurate baseline the
+          // moment it syncs — this is what lets a subsequent Edit Order
+          // (enqueueUpdateOrder above) use it as a trustworthy
+          // baseUpdatedAt instead of falling back to a guess.
+          await db.orders
+            .update(payload.id, {
+              syncStatus: "synced",
+              ...(data?.orderNumber ? { orderNumber: data.orderNumber } : {}),
+              ...(data?.updatedAt ? { updatedAt: data.updatedAt } : {}),
+            })
+            .catch(() => {});
+        } else if (item.op === "UPDATE_ORDER") {
+          const payload = item.payload as UpdateOrderPayload;
+          const data = outcome.data as { updatedAt?: string } | undefined;
+          await db.orders
+            .update(payload.orderId, { syncStatus: "synced", ...(data?.updatedAt ? { updatedAt: data.updatedAt } : {}) })
+            .catch(() => {});
+          // Best-effort — local items were already written in the shape
+          // the server now agrees with; only their sync flag needs
+          // updating.
+          await db.orderItems
+            .where("orderId")
+            .equals(payload.orderId)
+            .modify({ syncStatus: "synced" })
+            .catch(() => {});
         }
         syncedCount++;
         continue;
       }
 
       if (outcome.kind === "conflict") {
-        // Customer edit conflict (Phase 5 §H): the server refused to
-        // apply this update because the customer changed elsewhere since
-        // this edit was based on it. Never silently overwritten — the
-        // queue item is preserved as "failed" (not deleted, not
-        // silently retried forever) and the local customer row is
-        // flagged with the existing "conflict" syncStatus (Phase 2's
-        // SyncStatus type already reserves this value) so a future phase
-        // can build real conflict-resolution UI against it. No such UI
-        // is implemented in this phase.
+        // Customer/order edit conflict (Phase 5 §H, extended to orders in
+        // Step 53): the server refused to apply this update because the
+        // record changed elsewhere since this edit was based on it.
+        // Never silently overwritten — the queue item is preserved as
+        // "failed" (not deleted, not silently retried forever) and the
+        // local row is flagged with the existing "conflict" syncStatus
+        // (Phase 2's SyncStatus type already reserves this value) so a
+        // future phase can build real conflict-resolution UI against it.
+        // No such UI is implemented in this phase.
         await db.syncQueue.update(item.id, { status: "failed", attempts: item.attempts + 1, lastError: outcome.message });
         if (item.op === "UPDATE_CUSTOMER") {
           const payload = item.payload as UpdateCustomerPayload;
           await db.customers.update(payload.customerId, { syncStatus: "conflict" }).catch(() => {});
+        } else if (item.op === "UPDATE_ORDER") {
+          const payload = item.payload as UpdateOrderPayload;
+          await db.orders.update(payload.orderId, { syncStatus: "conflict" }).catch(() => {});
         }
         continue;
       }
@@ -825,6 +1042,22 @@ function requestFor(item: SyncQueueItem): { url: string; body: unknown } | null 
       body.set("__clientOrderId", payload.id);
       body.set("__customerId", payload.customerId);
       return { url: "/api/sync/order-create", body };
+    }
+    case "UPDATE_ORDER": {
+      // Same FormData-body reasoning as CREATE_ORDER above.
+      const payload = item.payload as UpdateOrderPayload;
+      const body = new FormData();
+      for (const [key, value] of Object.entries(payload.fields)) {
+        body.set(key, value);
+      }
+      body.set("__orderId", payload.orderId);
+      body.set("__customerId", payload.customerId);
+      body.set("__baseUpdatedAt", payload.baseUpdatedAt);
+      return { url: "/api/sync/order-update", body };
+    }
+    case "DELETE_ORDER": {
+      const payload = item.payload as DeleteOrderPayload;
+      return { url: "/api/sync/order-delete", body: { customerId: payload.customerId, orderId: payload.orderId } };
     }
     default:
       return null;

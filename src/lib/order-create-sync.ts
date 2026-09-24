@@ -32,7 +32,7 @@ import { isUniqueConstraintError } from "@/lib/prisma-errors";
 const MAX_ATTEMPTS = 5;
 
 export type OrderCreateSyncResult =
-  | { ok: true; id: string; orderNumber: string; alreadyExisted: boolean }
+  | { ok: true; id: string; orderNumber: string; alreadyExisted: boolean; updatedAt: string }
   | { ok: false; reason: "customer-not-found" }
   | { ok: false; reason: "invalid-input"; message: string };
 
@@ -72,7 +72,7 @@ export async function applyOrderCreateSync(
 
   const existing = await prisma.order.findUnique({ where: { id } });
   if (existing) {
-    return { ok: true, id: existing.id, orderNumber: existing.orderNumber, alreadyExisted: true };
+    return { ok: true, id: existing.id, orderNumber: existing.orderNumber, alreadyExisted: true, updatedAt: existing.updatedAt.toISOString() };
   }
 
   const result = await validateOrderInput(formData);
@@ -87,10 +87,14 @@ export async function applyOrderCreateSync(
         const orderNumber = await generateOrderNumber(tx);
         return tx.order.create({
           data: { id, ...buildOrderCreateData(customerId, orderNumber, sessionSub, validated) },
-          select: { id: true, orderNumber: true },
+          select: { id: true, orderNumber: true, updatedAt: true },
         });
       });
-      return { ok: true, id: order.id, orderNumber: order.orderNumber, alreadyExisted: false };
+      // Step 53 — updatedAt is returned so a client's very first local
+      // edit of a freshly-synced order has a real baseline to send as
+      // Edit Order's conflict guard (order-update.ts), rather than
+      // falling back to a locally-guessed placeholder.
+      return { ok: true, id: order.id, orderNumber: order.orderNumber, alreadyExisted: false, updatedAt: order.updatedAt.toISOString() };
     } catch (err) {
       if (isUniqueConstraintError(err) && attempt < MAX_ATTEMPTS) {
         continue;

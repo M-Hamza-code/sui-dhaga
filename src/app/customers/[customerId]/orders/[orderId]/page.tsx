@@ -8,6 +8,8 @@ import { PageContainer } from "@/components/ui/page-container";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { OrderStatusForm } from "@/components/orders/order-status-form";
+import { OrderPendingEditNotice } from "@/components/orders/order-pending-edit-notice";
+import { DeleteOrderButton } from "@/components/orders/delete-order-button";
 import { KAMEEZ_FIELDS, SHALWAR_DECIMAL_FIELDS, SHALWAR_POCKET_FIELD } from "@/lib/measurement-fields";
 import { toFractionDisplay } from "@/lib/fractions";
 import { en } from "@/lib/locale";
@@ -49,7 +51,9 @@ export default async function OrderDetailPage({
       pocketOption: true,
       pattiOption: true,
       defaultMeasurementSnapshot: true,
-      items: { orderBy: { position: "asc" }, include: { measurementSnapshot: true } },
+      // Step 50 — pocketOption added so a per-suit pocket style override
+      // can be shown below alongside the measurement override.
+      items: { orderBy: { position: "asc" }, include: { measurementSnapshot: true, pocketOption: true } },
     },
   });
 
@@ -84,8 +88,21 @@ export default async function OrderDetailPage({
               routes, not window.print() directly, so the owner always sees
               the document before printing it. Step 17 adds the WhatsApp
               entry point alongside them, same pattern: a link to a preview/
-              selection page, never an immediate wa.me redirect. */}
+              selection page, never an immediate wa.me redirect. Step 53
+              adds Edit Order the same way — a plain link to its own page,
+              never an inline edit here — and, like OrderStatusForm right
+              above, is hidden entirely for a soft-deleted customer's
+              order (never offered somewhere the save would just be
+              rejected server-side — see order-update.ts). */}
           <div className="mt-5 flex flex-wrap gap-2 border-t border-rule pt-4">
+            {!isDeleted && (
+              <Link
+                href={`/customers/${customer.id}/orders/${order.id}/edit`}
+                className="rounded-sm border border-rule px-3 py-1.5 text-sm text-graphite transition hover:bg-paper"
+              >
+                {en.orderForm.editLinkLabel}
+              </Link>
+            )}
             <Link
               href={`/customers/${customer.id}/orders/${order.id}/receipt`}
               className="rounded-sm border border-rule px-3 py-1.5 text-sm text-graphite transition hover:bg-paper"
@@ -105,6 +122,22 @@ export default async function OrderDetailPage({
               {en.whatsapp.linkLabel}
             </Link>
           </div>
+
+          {/* Step 55 (Part 2) — on its own row: visually distinct from
+              the neutral actions above (destructive, not routine), and
+              deliberately NOT gated on isDeleted the way Edit
+              Order/OrderStatusForm are — a stray order left over under an
+              already-deleted customer (exactly last step's "Real Admin
+              Customer" case) is precisely the kind of thing this button
+              needs to be able to clean up, not hide from. */}
+          <div className="mt-3 flex border-t border-rule pt-3">
+            <DeleteOrderButton customerId={customer.id} orderId={order.id} orderNumberDisplay={formatOrderNumber(order.orderNumber)} />
+          </div>
+
+          {/* Step 53 — honest "not yet synced" notice; see that
+              component's own comment for why this page doesn't try to be
+              fully local-first. */}
+          <OrderPendingEditNotice orderId={order.id} />
         </div>
 
         <div className="mt-6 space-y-6">
@@ -116,7 +149,15 @@ export default async function OrderDetailPage({
             </dl>
           </SectionCard>
 
-          <SectionCard title={en.orderDetail.designSelections}>
+          {/* Step 50 — this is suit 1's style: Order's own style fields
+              are (and always have been) exactly one suit's worth of
+              selections, and position 1 never has its own per-suit
+              override (see OrderItem's schema comment), so it always
+              reads these same fields. The heading now says so explicitly
+              only when there's more than one suit, to avoid implying
+              every suit shares this — the Suits section right below shows
+              any suit 2+ that was configured differently. */}
+          <SectionCard title={order.items.length > 1 ? en.orderDetail.designSelectionsSuit1 : en.orderDetail.designSelections}>
             <dl className="divide-y divide-rule/60 text-sm">
               <Row label={en.orderDetail.suitType} value={SUIT_TYPE_LABELS[order.suitType]} />
               <Row label={en.orderDetail.collar} value={COLLAR_TYPE_LABELS[order.collarType]} />
@@ -145,6 +186,20 @@ export default async function OrderDetailPage({
                         {item.measurementSnapshot ? en.orderDetail.overridden : en.orderDetail.sameAsDefault}
                       </span>
                     </div>
+                    {/* Step 50 — a suit's own style, only shown when it was
+                        actually configured differently from the order's
+                        (suit 1's) style above; every other suit silently
+                        shares that same style, exactly as before. */}
+                    {item.suitType && (
+                      <dl className="mt-2 divide-y divide-rule/50 rounded-sm border border-rule/60 bg-card px-3 text-sm">
+                        <Row label={en.orderDetail.suitType} value={SUIT_TYPE_LABELS[item.suitType]} />
+                        <Row label={en.orderDetail.collar} value={COLLAR_TYPE_LABELS[item.collarType!]} />
+                        <Row label={en.orderDetail.bain} value={BAIN_TYPE_LABELS[item.bainType!]} />
+                        <Row label={en.orderDetail.cuff} value={CUFF_TYPE_LABELS[item.cuffType!]} />
+                        <Row label={en.orderDetail.pocket} value={item.pocketOption?.label ?? "—"} />
+                        <Row label={en.orderDetail.ghera} value={GHERA_TYPE_LABELS[item.gheraType!]} />
+                      </dl>
+                    )}
                     {item.measurementSnapshot && (
                       <div className="mt-2">
                         <MeasurementSnapshotGrid snapshot={item.measurementSnapshot} />

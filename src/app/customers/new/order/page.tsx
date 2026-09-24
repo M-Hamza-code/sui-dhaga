@@ -19,9 +19,13 @@ export default async function NewCustomerOrderPage({
 }: {
   searchParams: { error?: string };
 }) {
-  const [pocketOptions, shopSettings] = await Promise.all([
+  const [pocketOptions, pattiOptions, shopSettings] = await Promise.all([
     prisma.designOption.findMany({
       where: { category: "POCKET", isActive: true },
+      orderBy: { sortOrder: "asc" },
+    }),
+    prisma.designOption.findMany({
+      where: { category: "PATTI", isActive: true },
       orderBy: { sortOrder: "asc" },
     }),
     prisma.shopSettings.findUnique({ where: { singleton: true } }),
@@ -40,6 +44,7 @@ export default async function NewCustomerOrderPage({
           mode="new"
           measurement={null}
           pocketOptions={pocketOptions}
+          pattiOptions={pattiOptions}
           error={error}
           defaultAdvancePercent={shopSettings?.defaultAdvancePercent?.toString() ?? null}
           defaultPrices={parseDefaultPrices(shopSettings?.defaultPrices)}

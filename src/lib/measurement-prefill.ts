@@ -64,7 +64,13 @@ export interface PrefillMeasurement {
   note: Measurement["note"];
 }
 
-function fromSnapshot(snapshot: MeasurementSnapshot): PrefillMeasurement {
+/**
+ * Step 53 — exported so the Edit Order page can convert an order's own
+ * MeasurementSnapshot rows (its default, and any per-suit override) into
+ * the same PrefillMeasurement shape this file already uses internally —
+ * one conversion, not a second copy of this field list.
+ */
+export function fromSnapshot(snapshot: MeasurementSnapshot): PrefillMeasurement {
   return {
     length: snapshot.length,
     shoulder: snapshot.shoulder,

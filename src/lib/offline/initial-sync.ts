@@ -19,6 +19,7 @@ import type {
   LocalOrderItem,
   LocalDesignOption,
   LocalShopSettings,
+  SyncQueueItem,
   SyncStatus,
 } from "./types";
 
@@ -56,6 +57,37 @@ export function shouldSkipServerRow(existingLocalSyncStatus: SyncStatus | undefi
 }
 
 /**
+ * Step 55 (Part 6) — the order-deletion analogue of shouldSkipServerRow
+ * above: which order ids this browser has already locally deleted (via
+ * enqueueDeleteOrder) but whose DELETE_ORDER queue item hasn't reached
+ * "synced" yet. Without this, calling runInitialSync() again — which
+ * happens on every app load/refresh, same as the Phase 9 problem this
+ * mirrors — would pull the still-existing server row right back into
+ * Dexie, resurrecting an order the admin just deleted on this device
+ * before the delete itself had a chance to reach the server. A "failed"
+ * DELETE_ORDER item is included too (not just "pending"/"sending"): if
+ * the delete didn't apply for some real reason, the order should stay
+ * visibly gone locally with the failure surfaced (same as any other
+ * failed queue item), never silently un-deleted out from under the
+ * admin.
+ *
+ * Extracted as a plain, pure function — no Dexie/Table involved — for
+ * the same reason shouldSkipServerRow is: directly testable without a
+ * browser.
+ */
+export function pendingDeleteOrderIds(queueItems: Pick<SyncQueueItem, "op" | "status" | "payload">[]): Set<string> {
+  const ids = new Set<string>();
+  for (const item of queueItems) {
+    if (item.op !== "DELETE_ORDER" || item.status === "synced") continue;
+    const payload = item.payload as { orderId?: unknown } | undefined;
+    if (payload && typeof payload.orderId === "string") {
+      ids.add(payload.orderId);
+    }
+  }
+  return ids;
+}
+
+/**
  * Phase 9 hardening — writes `serverRows` into `table`, but SKIPS any
  * row whose LOCAL copy currently has a non-"synced" syncStatus (i.e. a
  * "pending" edit not yet delivered, or a "conflict" awaiting review) —
@@ -84,7 +116,9 @@ export function shouldSkipServerRow(existingLocalSyncStatus: SyncStatus | undefi
  */
 async function bulkPutPreservingPendingEdits<T extends { id: string; syncStatus: SyncStatus }>(
   table: Table<T, string>,
-  serverRows: Omit<T, "syncStatus">[]
+  serverRows: Omit<T, "syncStatus">[],
+  /** Step 55 — ids to skip outright regardless of local syncStatus (a pending local DELETE_ORDER — see pendingDeleteOrderIds above). Only the `orders` table passes this; every other table keeps the original two-argument behavior. */
+  skipIds?: Set<string>
 ): Promise<void> {
   if (serverRows.length === 0) return;
 
@@ -93,6 +127,9 @@ async function bulkPutPreservingPendingEdits<T extends { id: string; syncStatus:
 
   const rowsToWrite: T[] = [];
   for (let i = 0; i < serverRows.length; i++) {
+    if (skipIds?.has(ids[i])) {
+      continue;
+    }
     if (shouldSkipServerRow(existingRows[i]?.syncStatus)) {
       continue;
     }
@@ -172,18 +209,28 @@ export async function runInitialSync(): Promise<InitialSyncResult> {
     // requirement is satisfied by construction, not by manual bookkeeping.
     await db.transaction(
       "rw",
-      [db.customers, db.measurements, db.orders, db.orderItems, db.measurementSnapshots, db.designOptions, db.shopSettings, db.syncMeta],
+      [db.customers, db.measurements, db.orders, db.orderItems, db.measurementSnapshots, db.designOptions, db.shopSettings, db.syncQueue, db.syncMeta],
       async () => {
+        // Step 55 (Part 6) — orders this browser has already locally
+        // deleted but whose delete hasn't reached "synced" yet must
+        // never be pulled back in by this same sync run — see
+        // pendingDeleteOrderIds's own comment.
+        const pendingDeletes = pendingDeleteOrderIds(await db.syncQueue.toArray());
+
         // Phase 9 — these three tables can each have a locally-pending
         // (not yet synced) or conflicted edit in flight, so they go
         // through the guard above rather than a blind bulkPut. See that
         // function's own comment for exactly why.
         await bulkPutPreservingPendingEdits<LocalCustomer>(db.customers, data.customers);
         await bulkPutPreservingPendingEdits<LocalMeasurement>(db.measurements, data.measurements);
-        await bulkPutPreservingPendingEdits<LocalOrder>(db.orders, data.orders);
+        await bulkPutPreservingPendingEdits<LocalOrder>(db.orders, data.orders, pendingDeletes);
         // orderItems is never independently locally-edited (Phase 1/6) —
-        // unchanged, plain bulkPut.
-        await db.orderItems.bulkPut(data.orderItems.map((i): LocalOrderItem => ({ ...i, syncStatus: "synced" })));
+        // unchanged, plain bulkPut, except the same pending-delete
+        // filter above: an item belonging to a locally-deleted-but-not-
+        // yet-synced order must not be resurrected either.
+        await db.orderItems.bulkPut(
+          data.orderItems.filter((i) => !pendingDeletes.has(i.orderId)).map((i): LocalOrderItem => ({ ...i, syncStatus: "synced" }))
+        );
         await db.measurementSnapshots.bulkPut(
           data.measurementSnapshots.map((s): LocalMeasurementSnapshot => ({ ...s, syncStatus: "synced" }))
         );

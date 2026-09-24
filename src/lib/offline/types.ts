@@ -129,6 +129,18 @@ export interface LocalOrderItem {
   orderId: string;
   position: number;
   measurementSnapshotId: string | null;
+  // Step 53 — mirrors the Step 50 per-suit style-override columns added
+  // to the server's OrderItem model. All null together = "same style as
+  // the order" (always true for position 1) — same convention as the
+  // server. Added here (Edit Order) so a locally-edited order's per-suit
+  // styles round-trip through the local mirror instead of being silently
+  // dropped.
+  suitType: SuitType | null;
+  collarType: CollarType | null;
+  bainType: BainType | null;
+  cuffType: CuffType | null;
+  gheraType: GheraType | null;
+  pocketOptionId: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
   syncStatus: SyncStatus;
@@ -169,7 +181,14 @@ export type SyncOp =
   | "UPDATE_CUSTOMER"
   | "SAVE_MEASUREMENT"
   | "CREATE_ORDER"
-  | "UPDATE_ORDER_STATUS";
+  | "UPDATE_ORDER_STATUS"
+  // Step 53 — Edit Order (measurements/styles/quantity/payment/delivery
+  // date on an already-existing order). Distinct from UPDATE_ORDER_STATUS,
+  // which only ever changes `status` and stays completely untouched.
+  | "UPDATE_ORDER"
+  // Step 55 — Delete Order. Never deletes the Customer (Rule A) — see
+  // sync-engine.ts's enqueueDeleteOrder and order-delete.ts.
+  | "DELETE_ORDER";
 
 export type SyncQueueStatus = "pending" | "sending" | "synced" | "failed";
 

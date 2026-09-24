@@ -14,8 +14,16 @@ export function DeleteCustomerButton({
     <form
       action={action}
       onSubmit={(event) => {
+        // Step 55 — reworded: deleteCustomer (customer-actions.ts) now
+        // also cascades to delete every one of this customer's orders
+        // (and dependent order items/measurement snapshots), fixing the
+        // bug where a deleted customer's orders kept showing up in Order
+        // Board/Recent Orders. The customer record itself is still only
+        // soft-deleted (kept, per the existing customerCode-reservation
+        // rule) — unchanged — so this now accurately describes both
+        // halves of what actually happens.
         const confirmed = window.confirm(
-          `Delete ${customerName}? They will be removed from customer lists and search, but their record is kept.`
+          `Delete ${customerName}? Their orders and related records will also be removed. They will be removed from customer lists and search, but their own record is kept.`
         );
         if (!confirmed) {
           event.preventDefault();

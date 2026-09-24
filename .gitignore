@@ -11,6 +11,9 @@
 # env files — never commit real secrets
 .env
 .env*.local
+# Step 54 — isolated test-database credentials (same shape as .env; see
+# scripts/README.md). Never committed, exactly like .env itself.
+.env.test
 
 # misc
 .DS_Store

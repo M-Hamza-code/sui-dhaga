@@ -8,16 +8,18 @@ const prisma = new PrismaClient();
  *
  * Seeds exactly two things, per the approved architecture:
  *   1. The single admin account (Phase 1 has no multi-user auth).
- *   2. Placeholder DesignOption rows for Pocket and Patti/Placket.
+ *   2. DesignOption rows for Pocket and Patti/Placket.
  *
- * ⚠️  PLACEHOLDER LABELS — REPLACE BEFORE GO-LIVE ⚠️
- * The exact traditional names for the three Pocket designs and the
- * Patti/Placket options on the physical register are still unconfirmed
- * (see architecture doc, Section 24, items 1–2). The codes/labels below
- * are clearly marked placeholders so the Add Order form is usable during
- * development, but they MUST be replaced with the real confirmed labels
- * before this goes live. Updating them is a data change only — no schema
- * migration is required.
+ * Step 57 — the real names are now confirmed (matched against the shop's
+ * own design photos — see order-options.ts) and replace the old
+ * placeholders below. Pocket grew from 3 to 5 options (Pocket D, Side
+ * Pocket) and Patti from 2 placeholders to its 3 real options (Chourous,
+ * Nok Daar, Fold) — both are still a pure data change, no schema
+ * migration, exactly as this file always anticipated. `update` now
+ * actually applies label/sortOrder on a re-seed (previously `update: {}`
+ * deliberately never touched an existing row, back when the placeholder
+ * text was intentionally left alone until someone confirmed the real
+ * names) — safe now that these ARE the real, confirmed names.
  */
 
 async function main() {
@@ -46,21 +48,26 @@ async function main() {
 
   console.log(`✔ Admin account ready: ${admin.email}`);
 
-  // ── 2. Placeholder DesignOption rows (Pocket / Patti) ─────────────────
-  // ⚠️ PLACEHOLDER — replace code/label once real names are confirmed.
-  const pocketPlaceholders = [
-    { code: "POCKET_A", label: "Pocket Design A (PLACEHOLDER — confirm real name)", sortOrder: 1 },
-    { code: "POCKET_B", label: "Pocket Design B (PLACEHOLDER — confirm real name)", sortOrder: 2 },
-    { code: "POCKET_C", label: "Pocket Design C (PLACEHOLDER — confirm real name)", sortOrder: 3 },
+  // ── 2. DesignOption rows (Pocket / Patti) ──────────────────────────────
+  // Codes are the stable key (order-options.ts's DESIGN_OPTION_IMAGES maps
+  // each one to its design photo) — never rename an existing code, only
+  // add new ones, so a historical order's pocketOption/pattiOption FK
+  // never dangles.
+  const pocketOptions = [
+    { code: "POCKET_A", label: "Pocket A", sortOrder: 1 },
+    { code: "POCKET_B", label: "Pocket B", sortOrder: 2 },
+    { code: "POCKET_C", label: "Pocket C", sortOrder: 3 },
+    { code: "POCKET_D", label: "Pocket D", sortOrder: 4 },
+    { code: "POCKET_E", label: "Side Pocket", sortOrder: 5 },
   ];
 
-  // ⚠️ PLACEHOLDER — replace code/label once real names are confirmed.
-  const pattiPlaceholders = [
-    { code: "PATTI_A", label: "Patti Design A (PLACEHOLDER — confirm real name)", sortOrder: 1 },
-    { code: "PATTI_B", label: "Patti Design B (PLACEHOLDER — confirm real name)", sortOrder: 2 },
+  const pattiOptions = [
+    { code: "PATTI_A", label: "Chourous Patti", sortOrder: 1 },
+    { code: "PATTI_B", label: "Nok Daar Patti", sortOrder: 2 },
+    { code: "PATTI_C", label: "Fold Patti", sortOrder: 3 },
   ];
 
-  for (const option of pocketPlaceholders) {
+  for (const option of pocketOptions) {
     await prisma.designOption.upsert({
       where: {
         category_code: {
@@ -68,7 +75,7 @@ async function main() {
           code: option.code,
         },
       },
-      update: {},
+      update: { label: option.label, sortOrder: option.sortOrder },
       create: {
         category: DesignOptionCategory.POCKET,
         ...option,
@@ -76,7 +83,7 @@ async function main() {
     });
   }
 
-  for (const option of pattiPlaceholders) {
+  for (const option of pattiOptions) {
     await prisma.designOption.upsert({
       where: {
         category_code: {
@@ -84,7 +91,7 @@ async function main() {
           code: option.code,
         },
       },
-      update: {},
+      update: { label: option.label, sortOrder: option.sortOrder },
       create: {
         category: DesignOptionCategory.PATTI,
         ...option,
@@ -92,10 +99,7 @@ async function main() {
     });
   }
 
-  console.log(
-    `✔ Seeded ${pocketPlaceholders.length} placeholder Pocket options and ` +
-      `${pattiPlaceholders.length} placeholder Patti options — REPLACE LABELS BEFORE GO-LIVE.`
-  );
+  console.log(`✔ Seeded ${pocketOptions.length} Pocket options and ${pattiOptions.length} Patti Style options.`);
 }
 
 main()

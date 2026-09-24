@@ -14,7 +14,10 @@ export async function getOrderPrintData(customerId: string, orderId: string) {
       pocketOption: true,
       pattiOption: true,
       defaultMeasurementSnapshot: true,
-      items: { orderBy: { position: "asc" }, include: { measurementSnapshot: true } },
+      // Step 50 — pocketOption added so a per-suit pocket override (see
+      // OrderItem's own schema comment) can be resolved below without a
+      // second query.
+      items: { orderBy: { position: "asc" }, include: { measurementSnapshot: true, pocketOption: true } },
     },
   });
 
@@ -48,14 +51,45 @@ export async function getOrderPrintData(customerId: string, orderId: string) {
   // suit-count column — that case is presented as a single synthetic
   // "Suit 1" using whatever default snapshot (if any) the order has,
   // rather than showing zero suits or crashing.
+  // Step 50 — per-suit STYLE resolution, the exact same inherit-unless-
+  // set rule as the measurement snapshot above, applied independently:
+  // an item with its own suitType uses its own six style fields; every
+  // other item (including every pre-Step-50 order's items, which have
+  // none of these columns set) inherits the order's own style. Position 1
+  // never has its own override (see OrderItem's schema comment) so it
+  // always falls into the "inherit" branch here.
   const suits =
     order.items.length > 0
       ? order.items.map((item) => ({
           position: item.position,
           isOverride: item.measurementSnapshot !== null,
           snapshot: item.measurementSnapshot ?? order.defaultMeasurementSnapshot,
+          isStyleOverride: item.suitType !== null,
+          style: {
+            suitType: item.suitType ?? order.suitType,
+            collarType: item.collarType ?? order.collarType,
+            bainType: item.bainType ?? order.bainType,
+            cuffType: item.cuffType ?? order.cuffType,
+            gheraType: item.gheraType ?? order.gheraType,
+            pocketOption: item.suitType !== null ? item.pocketOption : order.pocketOption,
+          },
         }))
-      : [{ position: 1, isOverride: false, snapshot: order.defaultMeasurementSnapshot }];
+      : [
+          {
+            position: 1,
+            isOverride: false,
+            snapshot: order.defaultMeasurementSnapshot,
+            isStyleOverride: false,
+            style: {
+              suitType: order.suitType,
+              collarType: order.collarType,
+              bainType: order.bainType,
+              cuffType: order.cuffType,
+              gheraType: order.gheraType,
+              pocketOption: order.pocketOption,
+            },
+          },
+        ];
 
   return { order, shopSettings, suits };
 }

@@ -13,6 +13,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
 import { parseCustomerInput } from "@/lib/customer-validation";
+import { deleteOrderCascade } from "@/lib/order-delete";
 
 // parseCustomerInput (and the validation rule itself) now lives in its
 // own plain module, customer-validation.ts (Step 25) — a "use server"
@@ -138,12 +139,33 @@ export async function deleteCustomer(customerId: string): Promise<void> {
     redirect("/dashboard");
   }
 
-  // Soft delete only: the row, its customerCode, its Measurement, and its
-  // Orders are all left in place. This just stamps deletedAt so the
-  // customer drops out of active lists/search.
-  await prisma.customer.update({
-    where: { id: customerId },
-    data: { deletedAt: new Date() },
+  // Step 55 — Part 3: the customer row itself is still only ever soft-
+  // deleted (its id, customerCode, and Measurement stay in place, same
+  // as before — customerCode must never be reused, and the row still
+  // existing is what lets it keep showing the existing "This customer
+  // has been deleted" notice rather than 404ing). What changed is that
+  // this no longer leaves every one of their Orders (and OrderItems/
+  // MeasurementSnapshots) sitting untouched in Postgres — that was the
+  // confirmed root cause of a deleted customer's orders staying fully
+  // visible in Order Board/Recent Orders/dashboard counts (nothing
+  // anywhere filters those queries on customer.deletedAt). Fixed by
+  // actually removing the orders, reusing deleteOrderCascade
+  // (order-delete.ts) — the exact same per-order deletion Part 2's
+  // standalone Delete Order feature uses, so there is only one
+  // definition of "what deleting an order means" in this codebase, and
+  // by construction it can never delete an unrelated customer's orders
+  // (each id comes straight from this customer's own `orders` relation).
+  // One transaction: either every order is gone AND the customer is
+  // marked deleted, or (on any failure) none of it applied.
+  await prisma.$transaction(async (tx) => {
+    const orders = await tx.order.findMany({ where: { customerId }, select: { id: true } });
+    for (const order of orders) {
+      await deleteOrderCascade(tx, order.id);
+    }
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { deletedAt: new Date() },
+    });
   });
 
   // Step 31: deleting a customer used to land on the legacy /customers

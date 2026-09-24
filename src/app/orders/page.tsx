@@ -8,13 +8,18 @@ import { OrderBoardTable } from "@/components/orders/order-board-table";
 import { getTodayRange } from "@/lib/date-range";
 import { en } from "@/lib/locale";
 
-type Tab = "overdue" | "due-today" | "ready" | "outstanding";
+type Tab = "new" | "overdue" | "due-today" | "ready" | "outstanding" | "delivered";
 // Step 47 — "outstanding" added as a 4th recognized value so the
 // Dashboard's Outstanding stat card has somewhere safe to link to. It is
 // deliberately NOT part of the default-tab-selection fallback below (see
 // `activeTab`), so visiting /orders with no ?tab= param is unaffected —
 // the original 3-way overdue → due-today → ready fallback is unchanged.
-const TABS: Tab[] = ["overdue", "due-today", "ready", "outstanding"];
+//
+// Step 50 — "new" and "delivered" added the same way: two more
+// recognized ?tab= values, each with its own count/where-clause below,
+// neither touching the existing fallback (still only ever
+// overdue/due-today/ready — see `activeTab`).
+const TABS: Tab[] = ["new", "overdue", "due-today", "ready", "outstanding", "delivered"];
 
 // S4 Order Board (Step 15) — real data, replacing the Step 10 placeholder.
 // Three tabs (design brief §8): Due today / Overdue / Ready. Tab state
@@ -46,7 +51,10 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
   // Cheap counts for every tab up front — used both to pick a sensible
   // default tab and to show a count badge on each tab, without fetching
   // full row data for tabs that aren't even showing.
-  const [overdueCount, dueTodayCount, readyCount, outstandingCount] = await Promise.all([
+  const [newCount, overdueCount, dueTodayCount, readyCount, outstandingCount, deliveredCount] = await Promise.all([
+    // Step 50 — exact same status/database value as everywhere else
+    // (order-options.ts's OrderStatus enum) — no new status introduced.
+    prisma.order.count({ where: { status: "NEW" } }),
     prisma.order.count({ where: { deliveryDate: { lt: todayStart }, status: { not: "DELIVERED" } } }),
     prisma.order.count({ where: { deliveryDate: { gte: todayStart, lt: todayEnd }, status: { not: "DELIVERED" } } }),
     prisma.order.count({ where: { status: "READY" } }),
@@ -55,6 +63,8 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
     // always match what that stat card shows: balance > 0, no status
     // filter.
     prisma.order.count({ where: { balanceAmount: { gt: 0 } } }),
+    // Step 50 — same rationale as `newCount`.
+    prisma.order.count({ where: { status: "DELIVERED" } }),
   ]);
 
   const requested = searchParams?.tab;
@@ -63,6 +73,9 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
     : // Sensible shop-workflow default (§2): overdue work is the most
       // urgent thing on the counter, then what's due today, then — if
       // nothing is even due — whatever's finished and waiting for pickup.
+      // Step 50 — "new" and "delivered" are deliberately NOT part of this
+      // fallback chain; visiting /orders with no ?tab= param behaves
+      // exactly as it did before these two tabs existed.
       overdueCount > 0
       ? "overdue"
       : dueTodayCount > 0
@@ -70,13 +83,17 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
         : "ready";
 
   const where =
-    activeTab === "overdue"
-      ? { deliveryDate: { lt: todayStart }, status: { not: "DELIVERED" as const } }
-      : activeTab === "due-today"
-        ? { deliveryDate: { gte: todayStart, lt: todayEnd }, status: { not: "DELIVERED" as const } }
-        : activeTab === "outstanding"
-          ? { balanceAmount: { gt: 0 } }
-          : { status: "READY" as const };
+    activeTab === "new"
+      ? { status: "NEW" as const }
+      : activeTab === "overdue"
+        ? { deliveryDate: { lt: todayStart }, status: { not: "DELIVERED" as const } }
+        : activeTab === "due-today"
+          ? { deliveryDate: { gte: todayStart, lt: todayEnd }, status: { not: "DELIVERED" as const } }
+          : activeTab === "outstanding"
+            ? { balanceAmount: { gt: 0 } }
+            : activeTab === "delivered"
+              ? { status: "DELIVERED" as const }
+              : { status: "READY" as const };
 
   const orders = await prisma.order.findMany({
     where,
@@ -94,13 +111,17 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
   });
 
   const emptyTitle =
-    activeTab === "overdue"
-      ? en.orderBoard.emptyOverdueTitle
-      : activeTab === "due-today"
-        ? en.orderBoard.emptyDueTodayTitle
-        : activeTab === "outstanding"
-          ? en.orderBoard.emptyOutstandingTitle
-          : en.orderBoard.emptyReadyTitle;
+    activeTab === "new"
+      ? en.orderBoard.emptyNewTitle
+      : activeTab === "overdue"
+        ? en.orderBoard.emptyOverdueTitle
+        : activeTab === "due-today"
+          ? en.orderBoard.emptyDueTodayTitle
+          : activeTab === "outstanding"
+            ? en.orderBoard.emptyOutstandingTitle
+            : activeTab === "delivered"
+              ? en.orderBoard.emptyDeliveredTitle
+              : en.orderBoard.emptyReadyTitle;
 
   return (
     <main className="min-h-screen bg-paper">
@@ -110,10 +131,12 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
         <h1 className="text-xl font-semibold text-graphite">{en.nav.orderBoard}</h1>
 
         <div className="mt-4 flex flex-wrap gap-1.5 rounded-sm border border-rule bg-card p-1.5 shadow-sm">
+          <TabLink tab="new" activeTab={activeTab} label={en.orderBoard.tabNew} count={newCount} tone="neutral" />
           <TabLink tab="overdue" activeTab={activeTab} label={en.search.overdue} count={overdueCount} tone="attention" />
           <TabLink tab="due-today" activeTab={activeTab} label={en.search.dueToday} count={dueTodayCount} tone="neutral" />
           <TabLink tab="ready" activeTab={activeTab} label={en.orderBoard.tabReady} count={readyCount} tone="success" />
           <TabLink tab="outstanding" activeTab={activeTab} label={en.orderBoard.tabOutstanding} count={outstandingCount} tone="attention" />
+          <TabLink tab="delivered" activeTab={activeTab} label={en.orderBoard.tabDelivered} count={deliveredCount} tone="success" />
         </div>
 
         <div className="mt-4">

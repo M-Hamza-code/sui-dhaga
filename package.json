@@ -10,7 +10,11 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "test:db:setup": "node scripts/setup-test-db.mjs",
+    "test:db:reset": "node scripts/reset-test-db.mjs",
+    "test:server": "node scripts/test-server.mjs",
+    "test:run": "node scripts/run-tests.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -19,6 +23,7 @@
     "@prisma/client": "5.20.0",
     "bcryptjs": "2.4.3",
     "dexie": "^4.4.5",
+    "lucide-react": "^1.47.0",
     "next": "14.2.15",
     "react": "18.3.1",
     "react-dom": "18.3.1",

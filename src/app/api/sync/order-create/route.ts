@@ -51,5 +51,8 @@ export async function POST(request: Request) {
     id: result.id,
     orderNumber: result.orderNumber,
     alreadyExisted: result.alreadyExisted,
+    // Step 53 — see order-create-sync.ts's own comment on why this is
+    // now returned.
+    updatedAt: result.updatedAt,
   });
 }

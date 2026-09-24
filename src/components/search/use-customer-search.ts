@@ -15,12 +15,50 @@
 // rather than only ever showing a "you're offline" dead end.
 // `searchFailed` is now reserved for the (rare) case where BOTH the
 // server call and the local fallback fail to produce a usable result.
+//
+// Step 56 (Issue 1) — the server half now calls /api/search/customers
+// (a plain Route Handler) instead of invoking the searchCustomers()
+// Server Action directly. See that route's own comment for exactly why:
+// calling a Server Action from here was the actual root cause of the
+// search input losing focus on every debounced search. Everything else
+// in this hook — the debounce, the stale-response guard, the local
+// fallback on failure — is unchanged.
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { searchCustomers, type CustomerSearchResult } from "@/lib/customer-search";
+import type { CustomerSearchResult } from "@/lib/customer-search";
 import { searchCustomersLocally } from "@/lib/offline/customer-search-local";
 
-const DEBOUNCE_MS = 300;
+// The route returns Date fields as JSON strings (there's no Date type
+// on the wire); revive them back into real Dates right here so
+// CustomerSearchResult's declared type holds everywhere downstream,
+// same as it always did coming out of the Server Action.
+type CustomerSearchResultJson = Omit<CustomerSearchResult, "lastOrderAt" | "measurementUpdatedAt"> & {
+  lastOrderAt: string | null;
+  measurementUpdatedAt: string | null;
+};
+
+async function fetchCustomerSearch(query: string): Promise<CustomerSearchResult[]> {
+  const res = await fetch(`/api/search/customers?q=${encodeURIComponent(query)}`, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`Search request failed (${res.status})`);
+  }
+  const data = (await res.json()) as { results: CustomerSearchResultJson[] };
+  return data.results.map((r) => ({
+    ...r,
+    lastOrderAt: r.lastOrderAt ? new Date(r.lastOrderAt) : null,
+    measurementUpdatedAt: r.measurementUpdatedAt ? new Date(r.measurementUpdatedAt) : null,
+  }));
+}
+
+// Step 58 — raised from 300ms to ~2s on direct feedback: search was
+// firing well before the admin finished typing a name. This only changes
+// WHEN the search fires — the actual fetch still goes through
+// fetchCustomerSearch() -> /api/search/customers (a plain Route Handler,
+// not a Server Action), which is what keeps the input focused while
+// typing (see that function's own comment / Step 56's fix); a longer
+// delay doesn't reintroduce the old remount/focus-loss bug, since that
+// was never a timing issue.
+const DEBOUNCE_MS = 2000;
 
 export function useCustomerSearch(query: string) {
   const [results, setResults] = useState<CustomerSearchResult[]>([]);
@@ -58,7 +96,7 @@ export function useCustomerSearch(query: string) {
       const requestId = ++latestRequestId.current;
       startTransition(async () => {
         try {
-          const found = await searchCustomers(trimmed);
+          const found = await fetchCustomerSearch(trimmed);
           if (requestId === latestRequestId.current) {
             setResults(found);
             setHasSearched(true);

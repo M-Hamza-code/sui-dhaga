@@ -136,13 +136,13 @@
     "newCustomerHeading": "New Customer & Order",
     "customerInfo": "Customer",
     "defaultMeasurements": "Measurements",
-    "defaultMeasurementsHint": "Pre-filled from the customer's saved measurements. Applies to every suit below unless overridden.",
+    "defaultMeasurementsHint": "Pre-filled from the customer's saved measurements. Shared by every suit below — styles can still differ per suit, using the advanced option if a suit's measurements genuinely need to differ too.",
     "kameez": "Kameez",
     "shalwar": "Shalwar",
     "suitsAndStyles": "Suits & styles",
     "quantity": "Number of suits",
     "suitLabelTemplate": "Suit {n}",
-    "perSuitOverridesHeading": "Per-suit adjustments",
+    "perSuitOverridesHeading": "Advanced: different measurements for a suit (optional)",
     "overrideToggle": "Different measurements for this suit",
     "overrideHint": "Only fields entered here differ from the default measurements above — everything else is inherited.",
     "suitType": "Suit Type",
@@ -151,6 +151,7 @@
     "cuff": "Cuff",
     "pocket": "Pocket",
     "ghera": "Ghera Style",
+    "pattiStyle": "Patti Style",
     "notSpecified": "Not specified",
     "payment": "Payment",
     "total": "Total",
@@ -163,7 +164,11 @@
     "measurementNote": "Measurement note",
     "notePlaceholder": "Optional",
     "save": "Save order",
+    "saveChanges": "Save changes",
     "saving": "Saving…",
+    "editHeading": "Edit Order",
+    "editLinkLabel": "Edit Order",
+    "orderDateLocked": "Order Date cannot be changed once an order exists.",
     "draftRestored": "Draft restored from your last visit to this order form.",
     "discardDraft": "Discard draft",
     "advanceExceedsTotal": "Advance Amount cannot exceed Total Amount.",
@@ -179,6 +184,7 @@
     "deliveryDate": "Delivery Date",
     "status": "Status",
     "designSelections": "Design Selections",
+    "designSelectionsSuit1": "Design Selections — Suit 1",
     "suitType": "Suit Type",
     "collar": "Collar",
     "bain": "Bain",
@@ -197,7 +203,12 @@
     "total": "Total Amount",
     "advance": "Advance Amount",
     "balance": "Balance Amount",
-    "note": "Note"
+    "note": "Note",
+    "pendingEditNotice": "Recent changes are saved on this device and will appear below once they sync.",
+    "deleteOrderLinkLabel": "Delete Order",
+    "deletingOrder": "Deleting…",
+    "deleteOrderConfirmTemplate": "Delete order {order}? The customer and their other orders will remain.",
+    "deleteOrderFailed": "Could not delete this order."
   },
   "print": {
     "backToOrder": "Back to order",
@@ -278,13 +289,18 @@
     }
   },
   "orderBoard": {
+    "tabNew": "New",
     "tabReady": "Ready",
     "tabOutstanding": "Outstanding",
+    "tabDelivered": "Delivered",
+    "emptyNewTitle": "No new orders",
     "emptyDueTodayTitle": "No orders due today",
     "emptyOverdueTitle": "No overdue orders",
     "emptyReadyTitle": "No ready orders",
     "emptyOutstandingTitle": "No outstanding balances",
+    "emptyDeliveredTitle": "No delivered orders yet",
     "emptyHint": "Orders will appear here as their delivery dates and statuses change.",
+    "deleteOrderAriaLabel": "Delete order",
     "columns": {
       "orderNo": "Order No.",
       "customer": "Customer",
@@ -292,7 +308,8 @@
       "deliveryDate": "Delivery Date",
       "suits": "Suits",
       "balance": "Balance",
-      "status": "Status"
+      "status": "Status",
+      "actions": "Actions"
     }
   }
 }

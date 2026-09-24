@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Order, Customer } from "@prisma/client";
 import { formatDate, formatMoney, formatOrderNumber } from "@/lib/format";
 import { OrderStatusForm } from "./order-status-form";
+import { DeleteOrderIconButton } from "./delete-order-icon-button";
 import { en } from "@/lib/locale";
 
 export type OrderBoardRow = Pick<Order, "id" | "orderNumber" | "customerId" | "deliveryDate" | "balanceAmount" | "status"> & {
@@ -50,7 +51,13 @@ export function OrderBoardTable({
             <Th>{en.orderBoard.columns.deliveryDate}</Th>
             <Th className="text-right">{en.orderBoard.columns.suits}</Th>
             <Th className="text-right">{en.orderBoard.columns.balance}</Th>
-            <Th className="pr-4">{en.orderBoard.columns.status}</Th>
+            <Th>{en.orderBoard.columns.status}</Th>
+            {/* Step 56 (Issue 4) — icon-only action column; the header
+                itself stays visually quiet (no label competing with
+                Status right next to it) but keeps a real accessible name. */}
+            <Th className="pr-4 text-right">
+              <span className="sr-only">{en.orderBoard.columns.actions}</span>
+            </Th>
           </tr>
         </thead>
         <tbody>
@@ -93,12 +100,19 @@ export function OrderBoardTable({
                     {formatMoney(order.balanceAmount)}
                   </Link>
                 </td>
-                <td className="px-3 py-2.5 pr-4">
+                <td className="px-3 py-2.5">
                   <OrderStatusForm
                     customerId={order.customerId}
                     orderId={order.id}
                     status={order.status}
                     redirectTo={redirectTo}
+                  />
+                </td>
+                <td className="py-2.5 pr-4">
+                  <DeleteOrderIconButton
+                    customerId={order.customerId}
+                    orderId={order.id}
+                    orderNumberDisplay={formatOrderNumber(order.orderNumber)}
                   />
                 </td>
               </tr>

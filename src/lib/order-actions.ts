@@ -28,7 +28,7 @@ import { requireSession } from "@/lib/auth";
 import { MONEY_REGEX, isAdvanceWithinTotal, calculateBalance } from "@/lib/money";
 import { measurementValueSchema, toMeasurementValueData, type MeasurementValueInput } from "@/lib/measurement-value";
 import { isUniqueConstraintError } from "@/lib/prisma-errors";
-import { buildOrderCreateData, type ValidatedOrderInput } from "@/lib/order-build";
+import { buildOrderCreateData, type ValidatedOrderInput, type ItemStyleOverride } from "@/lib/order-build";
 import { printPreviewUrl } from "@/lib/order-navigation";
 import { applyOrderStatusUpdate } from "@/lib/order-status-update";
 
@@ -54,14 +54,29 @@ const orderInputSchema = z.object({
   bainType: z.enum(["FULL_BAIN", "HALF_GOL_BAIN", "CUT_BAIN"], { errorMap: () => ({ message: "Select a Bain" }) }),
   cuffType: z.enum(["NOK_DAR", "CUT", "GOL", "FOLD"], { errorMap: () => ({ message: "Select a Cuff" }) }),
   gheraType: z.enum(["GOL", "SEEDHA"], { errorMap: () => ({ message: "Select a Ghera Style" }) }),
-  // Optional: the DesignOption FK is nullable in the schema. Patti/Placket
-  // has no home in the design brief's style block (§6b) — it is no longer
-  // collected on this form. Its column and historical data are untouched;
-  // new orders simply never set it.
+  // Optional: the DesignOption FK is nullable in the schema.
   pocketOptionId: z.string().trim().optional(),
+  // Step 57 — Patti Style is now collected on the form too, same
+  // optional-DesignOption-FK shape as Pocket above.
+  pattiOptionId: z.string().trim().optional(),
   totalAmount: z.string().trim().regex(MONEY_REGEX, "Total Amount must be a valid non-negative number"),
   advanceAmount: z.string().trim().regex(MONEY_REGEX, "Advance Amount must be a valid non-negative number"),
   note: z.string().trim().max(1000, "Note is too long").optional(),
+});
+
+// Step 50 — one suit's (position 2+) explicit style. Same enum rules as
+// orderInputSchema's own style fields above; kept as a separate schema
+// rather than reused wholesale because this one has no date/money/note
+// fields at all — only the six style values a per-suit override can set.
+const itemStyleSchema = z.object({
+  suitType: z.enum(["SIMPLE", "GARAM_SILAI", "DESIGNING", "DOUBLE_STITCH", "BARABAR_SILAI"], {
+    errorMap: () => ({ message: "Select a Suit Type" }),
+  }),
+  collarType: z.enum(["POINT", "FRENCH", "TIE"], { errorMap: () => ({ message: "Select a Collar" }) }),
+  bainType: z.enum(["FULL_BAIN", "HALF_GOL_BAIN", "CUT_BAIN"], { errorMap: () => ({ message: "Select a Bain" }) }),
+  cuffType: z.enum(["NOK_DAR", "CUT", "GOL", "FOLD"], { errorMap: () => ({ message: "Select a Cuff" }) }),
+  gheraType: z.enum(["GOL", "SEEDHA"], { errorMap: () => ({ message: "Select a Ghera Style" }) }),
+  pocketOptionId: z.string().trim().optional(),
 });
 
 export async function generateOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
@@ -154,6 +169,7 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
     cuffType: formData.get("cuffType"),
     gheraType: formData.get("gheraType"),
     pocketOptionId: formData.get("pocketOptionId") || undefined,
+    pattiOptionId: formData.get("pattiOptionId") || undefined,
     totalAmount: formData.get("totalAmount") || "",
     advanceAmount: formData.get("advanceAmount") || "",
     note: formData.get("note") || undefined,
@@ -201,6 +217,11 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
     return { error: pocketError };
   }
 
+  const pattiError = await validateDesignOption(data.pattiOptionId, DesignOptionCategory.PATTI, "Patti Style");
+  if (pattiError) {
+    return { error: pattiError };
+  }
+
   // Default measurement snapshot — what the owner actually entered/kept
   // for this order, not a link back to the live Measurement row (Step 9
   // architecture: a snapshot is an independent, frozen copy).
@@ -235,6 +256,47 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
     }
   }
 
+  // Step 50 — per-suit style. Position 1 always reads the order's own
+  // style fields above (never its own override — see order-build.ts's
+  // comment), so this loop only ever covers position 2 and beyond, and
+  // only when there actually is more than one suit; a single-suit order
+  // submits no item.*.style fields at all and itemStyles is just [null].
+  //
+  // Purely additive, like the measurement override above: a position
+  // with NO item.N.suitType field submitted at all (not merely blank —
+  // genuinely absent) is treated exactly as "no override", inheriting
+  // the order's own style, no error. This is what keeps every caller
+  // that predates this feature working completely unchanged — an older
+  // client, a replayed offline-sync queue item recorded before this
+  // deploy, or any other multi-suit submission that only ever knew about
+  // per-suit MEASUREMENT overrides. Only a position where this field IS
+  // present (the current order form always sends all five together — a
+  // real attempt to set a per-suit style) is actually validated, so a
+  // genuinely malformed value still gets rejected.
+  const itemStyles: (ItemStyleOverride | null)[] = [null];
+  for (let position = 2; position <= quantity; position++) {
+    if (formData.get(`item.${position}.suitType`) === null) {
+      itemStyles.push(null);
+      continue;
+    }
+    const parsedStyle = itemStyleSchema.safeParse({
+      suitType: formData.get(`item.${position}.suitType`),
+      collarType: formData.get(`item.${position}.collarType`),
+      bainType: formData.get(`item.${position}.bainType`),
+      cuffType: formData.get(`item.${position}.cuffType`),
+      gheraType: formData.get(`item.${position}.gheraType`),
+      pocketOptionId: formData.get(`item.${position}.pocketOptionId`) || undefined,
+    });
+    if (!parsedStyle.success) {
+      return { error: `Suit ${position}: ${parsedStyle.error.issues.map((issue) => issue.message).join(" ")}` };
+    }
+    const itemPocketError = await validateDesignOption(parsedStyle.data.pocketOptionId, DesignOptionCategory.POCKET, "Pocket");
+    if (itemPocketError) {
+      return { error: `Suit ${position}: ${itemPocketError}` };
+    }
+    itemStyles.push(parsedStyle.data);
+  }
+
   // Never trust a client-supplied balance — always recalculated here.
   const balanceAmount = calculateBalance(data.totalAmount, data.advanceAmount);
   const defaultSnapshotData = { ...toMeasurementValueData(defaultParsed.data), note: defaultNote, isBackfilled: false };
@@ -249,6 +311,7 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
       cuffType: data.cuffType,
       gheraType: data.gheraType,
       pocketOptionId: data.pocketOptionId,
+      pattiOptionId: data.pattiOptionId,
       totalAmount: data.totalAmount,
       advanceAmount: data.advanceAmount,
       balanceAmount,
@@ -256,6 +319,7 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
       quantity,
       defaultSnapshotData,
       itemOverrides,
+      itemStyles,
     },
   };
 }

@@ -2,11 +2,15 @@
 
 // Step 51 — replaces the header's old three-piece Settings-nav-item /
 // Admin-readout / Logout-button area with a single Settings icon button
-// that opens a small dropdown. No icon library dependency added — the
-// project has none, and a full package for one gear glyph would be
-// unnecessary weight, so this is a plain inline SVG (the same "no new
-// dependency for a decorative element" call Step 41's measurement-
-// diagram silhouette already made).
+// that opens a small dropdown.
+//
+// Step 56 (Issue 5) — the button's own icon changed from a hand-drawn
+// gear SVG to lucide-react's SlidersHorizontal (the requested "multiple
+// horizontal lines/sliders, one above another" icon) — lucide-react is
+// now a real dependency (Step 56 also added it for Trash2 on the Order
+// Board), so this no longer needs to be a bespoke inline SVG. Nothing
+// else about this button/menu changed: same aria-label, same click
+// target, same dropdown, same three settings views, same logout form.
 //
 // The three menu items are plain <Link>s to the existing /settings route
 // with a `?view=` query param (see src/app/settings/page.tsx) — no new
@@ -17,6 +21,7 @@
 // (a real navigation) all close the menu.
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { SlidersHorizontal } from "lucide-react";
 import { logout } from "@/lib/auth-actions";
 import { en } from "@/lib/locale";
 
@@ -52,7 +57,7 @@ export function SettingsMenu({ email }: { email: string | null }) {
         aria-label={en.nav.settings}
         className="flex h-9 w-9 flex-none items-center justify-center rounded-sm border border-rule text-graphite transition hover:bg-paper hover:text-indigo focus:outline-none focus:ring-2 focus:ring-indigo focus:ring-offset-2"
       >
-        <GearIcon />
+        <SlidersHorizontal className="h-5 w-5" aria-hidden="true" />
       </button>
 
       {open && (
@@ -112,20 +117,5 @@ function MenuLink({
     >
       {children}
     </Link>
-  );
-}
-
-// Plain inline gear glyph — decorative only (aria-hidden; the button
-// itself carries the accessible name via aria-label).
-function GearIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
-      <circle cx="12" cy="12" r="3" />
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M12 3.5v2m0 13v2m8.5-8.5h-2m-13 0h-2m13.03-5.53-1.41 1.41M6.88 17.12l-1.41 1.41m0-13.06 1.41 1.41m10.24 10.24 1.41 1.41"
-      />
-    </svg>
   );
 }

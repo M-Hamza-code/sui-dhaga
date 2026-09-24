@@ -33,10 +33,14 @@ export default async function NewOrderPage({
   // itself was found — an offline-created, not-yet-synced customer
   // simply has no server-side measurement to prefill from yet, same as
   // any other genuinely brand-new synced customer.
-  const [prefillMeasurement, pocketOptions, shopSettings] = await Promise.all([
+  const [prefillMeasurement, pocketOptions, pattiOptions, shopSettings] = await Promise.all([
     getLatestMeasurementForPrefill(params.customerId),
     prisma.designOption.findMany({
       where: { category: "POCKET", isActive: true },
+      orderBy: { sortOrder: "asc" },
+    }),
+    prisma.designOption.findMany({
+      where: { category: "PATTI", isActive: true },
       orderBy: { sortOrder: "asc" },
     }),
     prisma.shopSettings.findUnique({ where: { singleton: true } }),
@@ -57,6 +61,7 @@ export default async function NewOrderPage({
           customerExists={customerExists}
           measurement={prefillMeasurement}
           pocketOptions={pocketOptions}
+          pattiOptions={pattiOptions}
           error={error}
           defaultAdvancePercent={shopSettings?.defaultAdvancePercent?.toString() ?? null}
           defaultPrices={parseDefaultPrices(shopSettings?.defaultPrices)}

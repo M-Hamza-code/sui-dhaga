@@ -40,8 +40,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
+  // Step 50 — an already-authenticated visitor hitting /login (e.g. a
+  // stale bookmark, or opening it in a second tab while signed in) now
+  // lands on /overview too, matching the fresh-login destination
+  // (auth-actions.ts). Every other already-authenticated-visitor path
+  // (a bookmarked /dashboard, a bookmarked /customers/... URL, etc.)
+  // still lands exactly where its own URL says, unchanged.
   if (pathname === "/login" && session) {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
+    return NextResponse.redirect(new URL("/overview", request.url));
   }
 
   return NextResponse.next();

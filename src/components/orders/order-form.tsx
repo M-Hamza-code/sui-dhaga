@@ -10,8 +10,10 @@
 // optional "different measurements for this suit" override block that
 // becomes that OrderItem's own MeasurementSnapshot. Style selections
 // (suit type, collar, bain, cuff, pocket, ghera) are shared once per
-// order, matching the design brief's style-block table — Patti/Placket is
-// not part of that table and is not collected here.
+// order, matching the design brief's style-block table. Patti Style
+// (Step 57) is also collected, order-level only like the rest of this
+// paragraph — there is no per-suit Patti override (OrderItem has no
+// pattiOptionId column; see DraftShape's own comment).
 //
 // Autosave (design brief §9) is a pure client convenience via
 // order-draft-storage.ts: customer-scoped localStorage, no DB writes, no
@@ -22,7 +24,7 @@ import { useRouter } from "next/navigation";
 import type { DesignOption, SuitType, CollarType, BainType, CuffType, GheraType } from "@prisma/client";
 import { createCustomerAndOrder } from "@/lib/customer-order-actions";
 import { getOfflineDb, isOfflineDbAvailable } from "@/lib/offline/db";
-import { enqueueCreateOrder, processSyncQueue } from "@/lib/offline/sync-engine";
+import { enqueueCreateOrder, enqueueUpdateOrder, processSyncQueue } from "@/lib/offline/sync-engine";
 import { navigateAfterLocalSave } from "@/lib/offline/navigate";
 import { printPreviewUrl } from "@/lib/order-navigation";
 // Step 28: broadened from Prisma's Measurement type to this shared shape —
@@ -37,6 +39,7 @@ import {
   BAIN_TYPE_OPTIONS,
   CUFF_TYPE_OPTIONS,
   GHERA_TYPE_OPTIONS,
+  DESIGN_OPTION_IMAGES,
 } from "@/lib/order-options";
 import { StyleTile } from "./style-tile";
 import {
@@ -65,9 +68,63 @@ const SECTION_LABELS: Record<string, string> = {
   payment: en.orderForm.payment,
 };
 
+// Step 50 — one suit's (position 2+) own style. Position 1 has no entry
+// of its own — the top-level suitType/collarType/... state IS suit 1's
+// style, exactly as it always was; this shape only exists so suit 2 and
+// beyond can each hold an independent choice for the same six fields.
+interface SuitStyleState {
+  suitType: SuitType;
+  collarType: CollarType;
+  bainType: BainType;
+  cuffType: CuffType;
+  gheraType: GheraType;
+  pocketOptionId: string;
+}
+
 interface SuitState {
   override: boolean;
   values: MeasurementBlockValues;
+  // Present on every entry (including position 1, for a uniform shape)
+  // but only ever read/submitted for position 2 and beyond — see
+  // setItemStyleField and the per-suit style blocks below.
+  style: SuitStyleState;
+}
+
+// Step 53 — Edit Order. The exact shape an existing order's current state
+// needs to be in for makeInitialStateFromOrder (below) to seed the form —
+// deliberately NOT the raw Prisma Order/OrderItem/MeasurementSnapshot
+// shape (those carry Decimal/Date objects and relation objects this
+// client component should never receive directly); the edit page builds
+// this from getOrderPrintData()'s already-resolved per-suit style +
+// measurement data, the exact same resolution order detail/print/work
+// order already use, so the edit form opens with the same values those
+// pages already show.
+export interface OrderEditData {
+  orderId: string;
+  /** yyyy-mm-dd — Order Date is read-only in edit mode (see the form's own comment on why); this is only ever redisplayed, never recomputed. */
+  orderDateDisplay: string;
+  deliveryDate: string; // yyyy-mm-dd, or ""
+  suitType: SuitType;
+  collarType: CollarType;
+  bainType: BainType;
+  cuffType: CuffType;
+  gheraType: GheraType;
+  pocketOptionId: string;
+  pattiOptionId: string;
+  totalAmount: string;
+  advanceAmount: string;
+  note: string;
+  /** The order's current server `updatedAt` (ISO) — becomes the edit's conflict-guard baseline (order-update.ts), same role UpdateCustomerPayload's baseUpdatedAt already plays. */
+  baseUpdatedAt: string;
+  defaultMeasurement: PrefillMeasurement | null;
+  defaultNote: string;
+  items: {
+    position: number;
+    override: boolean;
+    measurement: PrefillMeasurement | null;
+    /** null = this suit currently inherits the order's own style (always true for position 1). */
+    style: SuitStyleState | null;
+  }[];
 }
 
 /**
@@ -100,6 +157,10 @@ interface DraftShape {
   cuffType: CuffType;
   gheraType: GheraType;
   pocketOptionId: string;
+  // Step 57 — order-level only, no per-suit entry (unlike the six fields
+  // above, which each also live in SuitStyleState) — OrderItem has no
+  // pattiOptionId column, matching the schema exactly, no migration.
+  pattiOptionId: string;
   quantity: number;
   totalAmount: string;
   totalTouched: boolean;
@@ -125,6 +186,18 @@ function addDays(iso: string, days: number): string {
   return toISODate(d);
 }
 
+/** The starting style for a freshly-added suit position — a plain copy of the given values, never a shared reference (each suit must be independently editable afterward). */
+function suitStyleFrom(values: {
+  suitType: SuitType;
+  collarType: CollarType;
+  bainType: BainType;
+  cuffType: CuffType;
+  gheraType: GheraType;
+  pocketOptionId: string;
+}): SuitStyleState {
+  return { ...values };
+}
+
 function makeInitialState(measurement: PrefillMeasurement | null, defaultPrices: DefaultPricesMap): DraftShape {
   // Deliberately not date-derived: this is a client component, so its
   // first render also happens once on the server for the initial HTML.
@@ -133,6 +206,14 @@ function makeInitialState(measurement: PrefillMeasurement | null, defaultPrices:
   // real "today" default is filled in by the mount effect below instead,
   // which only ever runs in the browser.
   const initialSuitType = SUIT_TYPE_OPTIONS[0].value;
+  const initialStyle = suitStyleFrom({
+    suitType: initialSuitType,
+    collarType: COLLAR_TYPE_OPTIONS[0].value,
+    bainType: BAIN_TYPE_OPTIONS[0].value,
+    cuffType: CUFF_TYPE_OPTIONS[0].value,
+    gheraType: GHERA_TYPE_OPTIONS[0].value,
+    pocketOptionId: "",
+  });
   return {
     customerName: "",
     customerPhonePrimary: "",
@@ -147,6 +228,7 @@ function makeInitialState(measurement: PrefillMeasurement | null, defaultPrices:
     cuffType: CUFF_TYPE_OPTIONS[0].value,
     gheraType: GHERA_TYPE_OPTIONS[0].value,
     pocketOptionId: "",
+    pattiOptionId: "",
     quantity: 1,
     // Step 18: a configured Settings default price for the initially-
     // selected suit type pre-fills Total — same as if the owner had just
@@ -163,7 +245,59 @@ function makeInitialState(measurement: PrefillMeasurement | null, defaultPrices:
     sendOnWhatsApp: true,
     defaultValues: measurementBlockValuesFrom(measurement),
     defaultNote: measurement?.note ?? "",
-    items: [{ override: false, values: emptyMeasurementBlockValues() }],
+    items: [{ override: false, values: emptyMeasurementBlockValues(), style: initialStyle }],
+  };
+}
+
+/**
+ * Step 53 — seeds the form's state from an existing order (mode="edit")
+ * instead of a blank/customer-measurement baseline. totalTouched/
+ * advanceTouched/deliveryTouched all start `true` so the existing
+ * Settings-suggestion effects (handleSuitTypeChange's default-price
+ * fill, the live advance-percent suggestion, the +7-day delivery
+ * default) never fire and silently overwrite a real, already-saved
+ * value the moment this form mounts — those suggestions only ever make
+ * sense for a genuinely blank NEW order.
+ */
+function makeInitialStateFromOrder(orderData: OrderEditData): DraftShape {
+  const orderStyle: SuitStyleState = {
+    suitType: orderData.suitType,
+    collarType: orderData.collarType,
+    bainType: orderData.bainType,
+    cuffType: orderData.cuffType,
+    gheraType: orderData.gheraType,
+    pocketOptionId: orderData.pocketOptionId,
+  };
+  const items = orderData.items.length > 0 ? orderData.items : [{ position: 1, override: false, measurement: null, style: null }];
+  return {
+    customerName: "",
+    customerPhonePrimary: "",
+    customerPhoneSecondary: "",
+    customerAddress: "",
+    orderDate: orderData.orderDateDisplay,
+    deliveryDate: orderData.deliveryDate,
+    deliveryTouched: true,
+    suitType: orderData.suitType,
+    collarType: orderData.collarType,
+    bainType: orderData.bainType,
+    cuffType: orderData.cuffType,
+    gheraType: orderData.gheraType,
+    pocketOptionId: orderData.pocketOptionId,
+    pattiOptionId: orderData.pattiOptionId,
+    quantity: items.length,
+    totalAmount: orderData.totalAmount,
+    totalTouched: true,
+    advanceAmount: orderData.advanceAmount,
+    advanceTouched: true,
+    note: orderData.note,
+    sendOnWhatsApp: false, // unused — the checkbox is hidden entirely in mode="edit"
+    defaultValues: measurementBlockValuesFrom(orderData.defaultMeasurement),
+    defaultNote: orderData.defaultNote,
+    items: items.map((item) => ({
+      override: item.override,
+      values: item.measurement ? measurementBlockValuesFrom(item.measurement) : emptyMeasurementBlockValues(),
+      style: suitStyleFrom(item.style ?? orderStyle),
+    })),
   };
 }
 
@@ -173,25 +307,32 @@ export function OrderForm({
   customerExists = false,
   measurement,
   pocketOptions,
+  pattiOptions,
   error,
   defaultAdvancePercent = null,
   defaultPrices = {},
+  orderData,
 }: {
-  /** Step 25 — "new" renders the editable customer-info block and submits through createCustomerAndOrder. Defaults to the original "existing" behaviour, unchanged. Phase 6 made "existing" local-first (see handleSubmit below) — "new" is unchanged, still Server-Action-submitted. */
-  mode?: "existing" | "new";
-  /** Required when mode="existing" (an existing customer's id); ignored in mode="new", where no customer exists yet. */
+  /** Step 25 — "new" renders the editable customer-info block and submits through createCustomerAndOrder. Step 53 adds "edit" — an existing order's own values, submitted through enqueueUpdateOrder. Defaults to the original "existing" behaviour, unchanged. Phase 6 made "existing" local-first (see handleSubmit below) — "new" is unchanged, still Server-Action-submitted. */
+  mode?: "existing" | "new" | "edit";
+  /** Required for mode="existing"/"edit" (an existing customer's id); ignored in mode="new", where no customer exists yet. */
   customerId?: string;
-  /** Phase 6 — mode="existing" only: from the server-rendered page's own Prisma read, whether Postgres has a (non-deleted) customer row for this id yet. A customer created offline and not yet synced has none, but may still exist locally (see the mount effect below). Ignored in mode="new". */
+  /** Phase 6 — mode="existing" only: from the server-rendered page's own Prisma read, whether Postgres has a (non-deleted) customer row for this id yet. A customer created offline and not yet synced has none, but may still exist locally (see the mount effect below). Ignored in mode="new"/"edit" (an order can only be edited once it exists server-side — see the Edit Order page's own comment). */
   customerExists?: boolean;
   measurement: PrefillMeasurement | null;
   pocketOptions: DesignOption[];
+  /** Step 57 — Patti Style options, same shape/source as pocketOptions (DesignOptionCategory.PATTI). Order-level only — see DraftShape's own comment on why there's no per-suit equivalent. */
+  pattiOptions: DesignOption[];
   error?: string;
-  /** Settings (Step 18) — a configured default advance %, or null if none is set. Only ever suggests a starting value; never forces one. */
+  /** Settings (Step 18) — a configured default advance %, or null if none is set. Only ever suggests a starting value; never forces one. Ignored in mode="edit" (advanceTouched starts true — see makeInitialStateFromOrder). */
   defaultAdvancePercent?: string | null;
-  /** Settings (Step 18) — configured default total per suit type, where set. */
+  /** Settings (Step 18) — configured default total per suit type, where set. Ignored in mode="edit" for the same reason. */
   defaultPrices?: DefaultPricesMap;
+  /** Required for mode="edit" — the order's current values to seed the form with. Ignored otherwise. */
+  orderData?: OrderEditData;
 }) {
   const isNewCustomer = mode === "new";
+  const isEdit = mode === "edit";
   const router = useRouter();
   // Step 25: the localStorage draft key for mode="new" is the fixed
   // string "new" — real customer ids are always cuids (e.g.
@@ -199,7 +340,12 @@ export function OrderForm({
   // customer draft can never overwrite or be confused with any existing
   // customer's draft, and vice versa. order-draft-storage.ts itself is
   // untouched — it already takes an opaque string key.
-  const draftKey = isNewCustomer ? "new" : customerId!;
+  //
+  // Step 53 — mode="edit" uses its own "edit:<orderId>" namespace, so an
+  // in-progress edit's draft can never collide with (or be confused for)
+  // a separate "create a new order for this same customer" draft, which
+  // already uses the bare customerId key.
+  const draftKey = isNewCustomer ? "new" : isEdit ? `edit:${orderData!.orderId}` : customerId!;
   // Phase 6 — mode="new" still submits natively through the existing
   // createCustomerAndOrder Server Action (out of this phase's scope,
   // same scoping decision Phase 5 made for customer creation). This
@@ -208,9 +354,15 @@ export function OrderForm({
   const action = isNewCustomer ? createCustomerAndOrder : undefined;
   const formRef = useRef<HTMLFormElement>(null);
 
-  const [state, setState] = useState<DraftShape>(() => makeInitialState(measurement, defaultPrices));
+  const [state, setState] = useState<DraftShape>(() => (isEdit ? makeInitialStateFromOrder(orderData!) : makeInitialState(measurement, defaultPrices)));
   const [defaultActiveField, setDefaultActiveField] = useState("length");
   const [itemActiveFields, setItemActiveFields] = useState<string[]>(["length"]);
+  // Step 50 — the quantity input's own displayed text, deliberately
+  // decoupled from the committed state.quantity/state.items (see
+  // handleQuantityTextChange/handleQuantityBlur below). Step 53 — for
+  // mode="edit" this starts at the order's own current suit count rather
+  // than "1".
+  const [quantityText, setQuantityText] = useState(() => (isEdit ? String(orderData!.items.length || 1) : "1"));
   const [draftRestored, setDraftRestored] = useState(false);
   const draftLoadedRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
@@ -285,10 +437,45 @@ export function OrderForm({
       // from a newer draft) keeps the "checked by default" rule honest
       // for that one narrow case without touching how every other field
       // already round-trips through this same object.
-      setState(draft.sendOnWhatsApp === undefined ? { ...draft, sendOnWhatsApp: true } : draft);
-      setItemActiveFields(draft.items.map(() => "length"));
+      //
+      // Step 50 — a draft saved before this step has items with no
+      // `style` key at all (per-suit style didn't exist yet). Backfilling
+      // it from that same draft's own suit-1 style keeps an old,
+      // mid-edit draft safely restorable instead of crashing on the new
+      // per-suit style blocks below.
+      const normalized = {
+        ...draft,
+        sendOnWhatsApp: draft.sendOnWhatsApp === undefined ? true : draft.sendOnWhatsApp,
+        // Step 57 — a draft saved before this step has no pattiOptionId
+        // key at all (the field didn't exist yet); same "missing key
+        // defaults to the harmless empty value" treatment sendOnWhatsApp
+        // gets above, not the "restore whatever's there" treatment every
+        // pre-existing field gets via the spread.
+        pattiOptionId: draft.pattiOptionId ?? "",
+        items: draft.items.map((item) => ({
+          ...item,
+          style:
+            item.style ??
+            suitStyleFrom({
+              suitType: draft.suitType,
+              collarType: draft.collarType,
+              bainType: draft.bainType,
+              cuffType: draft.cuffType,
+              gheraType: draft.gheraType,
+              pocketOptionId: draft.pocketOptionId,
+            }),
+        })),
+      };
+      setState(normalized);
+      setQuantityText(String(normalized.quantity));
+      setItemActiveFields(normalized.items.map(() => "length"));
       setDraftRestored(true);
-    } else {
+    } else if (!isEdit) {
+      // Step 53 — mode="edit" already seeded orderDate/deliveryDate from
+      // the order's own real values (makeInitialStateFromOrder); this
+      // "no draft yet" fallback only makes sense for a genuinely blank
+      // new order, so it's skipped entirely in edit mode rather than
+      // overwriting those real dates with today's.
       const today = toISODate(new Date());
       setState((prev) => ({ ...prev, orderDate: today, deliveryDate: addDays(today, 7) }));
     }
@@ -320,11 +507,24 @@ export function OrderForm({
     setState((prev) => ({ ...prev, deliveryDate: value, deliveryTouched: true }));
   }
 
-  function handleQuantityChange(raw: string) {
-    const n = Math.max(1, Math.min(20, parseInt(raw, 10) || 1));
+  /** Grows/shrinks state.items (and itemActiveFields) to exactly `n` entries. A newly-added position starts as a copy of suit 1's CURRENT style — see suitStyleFrom's comment — and is independently editable from then on. */
+  function commitQuantity(n: number) {
     setState((prev) => {
       const items = prev.items.slice(0, n);
-      while (items.length < n) items.push({ override: false, values: emptyMeasurementBlockValues() });
+      while (items.length < n) {
+        items.push({
+          override: false,
+          values: emptyMeasurementBlockValues(),
+          style: suitStyleFrom({
+            suitType: prev.suitType,
+            collarType: prev.collarType,
+            bainType: prev.bainType,
+            cuffType: prev.cuffType,
+            gheraType: prev.gheraType,
+            pocketOptionId: prev.pocketOptionId,
+          }),
+        });
+      }
       return { ...prev, quantity: n, items };
     });
     setItemActiveFields((prev) => {
@@ -332,6 +532,33 @@ export function OrderForm({
       while (next.length < n) next.push("length");
       return next;
     });
+  }
+
+  // Step 50 (requirement #4) — the quantity input's own text is tracked
+  // separately from the committed state.quantity/state.items so the
+  // field can be fully cleared, or briefly hold an out-of-range number,
+  // while typing without anything snapping back mid-edit. A value that is
+  // ALREADY a valid 1-20 integer commits immediately ("1 -> 2 immediately
+  // shows 2 suits"); anything else (blank, "0", out of range, non-numeric)
+  // simply doesn't commit yet — the last valid committed quantity is left
+  // exactly as it was until handleQuantityBlur normalizes it.
+  function handleQuantityTextChange(raw: string) {
+    setQuantityText(raw);
+    const trimmed = raw.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const n = parseInt(trimmed, 10);
+      if (n >= 1 && n <= 20) {
+        commitQuantity(n);
+      }
+    }
+  }
+
+  /** On blur (the "save/commit" point, requirement #4): a blank field normalizes to 1; anything else clamps into the valid 1-20 range. Never runs while still typing. */
+  function handleQuantityBlur() {
+    const trimmed = quantityText.trim();
+    const n = trimmed === "" ? 1 : Math.max(1, Math.min(20, parseInt(trimmed, 10) || 1));
+    commitQuantity(n);
+    setQuantityText(String(n));
   }
 
   function toggleOverride(position: number, on: boolean) {
@@ -350,10 +577,21 @@ export function OrderForm({
     });
   }
 
+  /** Suit 2+'s own style (requirement #6/#8) — position 1 is never touched here; its style is the top-level suitType/collarType/... state, updated via handleSuitTypeChange/update() exactly as before. */
+  function setItemStyleField<K extends keyof SuitStyleState>(position: number, key: K, value: SuitStyleState[K]) {
+    setState((prev) => {
+      const items = [...prev.items];
+      items[position - 1] = { ...items[position - 1], style: { ...items[position - 1].style, [key]: value } };
+      return { ...prev, items };
+    });
+  }
+
   function discardDraft() {
     clearOrderDraft(draftKey);
-    setState(makeInitialState(measurement, defaultPrices));
+    const fresh = isEdit ? makeInitialStateFromOrder(orderData!) : makeInitialState(measurement, defaultPrices);
+    setState(fresh);
     setItemActiveFields(["length"]);
+    setQuantityText(String(fresh.quantity));
     setDraftRestored(false);
   }
 
@@ -419,6 +657,31 @@ export function OrderForm({
     setSubmitting(true);
 
     const formData = new FormData(event.currentTarget);
+
+    // Step 53 — Edit Order: a separate, simpler branch. Unlike creation,
+    // there is no print-preview destination to race a live sync against
+    // (S5 only ever makes sense for a brand-new order) — every save
+    // always lands back on this same order's own detail page, whether or
+    // not the sync happened to finish before navigation. That page
+    // itself may briefly show pre-edit values if it renders before the
+    // background sync completes (or while offline) — the same
+    // "server-rendered page can lag a pending local edit" characteristic
+    // every local-first form in this app already accepts (e.g.
+    // edit-customer-form.tsx's own navigateAfterLocalSave, also
+    // fire-and-forget on the sync) — OrderPendingEditNotice on that page
+    // says so honestly rather than silently showing stale data as current.
+    if (isEdit) {
+      const result = await enqueueUpdateOrder(customerId!, orderData!.orderId, formData);
+      if (!result.queued) {
+        setLocalError(result.message ?? "Could not save changes.");
+        setSubmitting(false);
+        return;
+      }
+      processSyncQueue().catch(() => {});
+      navigateAfterLocalSave(router, `/customers/${customerId}/orders/${orderData!.orderId}`);
+      return;
+    }
+
     const result = await enqueueCreateOrder(customerId!, formData);
     if (!result.queued || !result.id) {
       setLocalError(result.message ?? "Could not save order.");
@@ -622,14 +885,30 @@ export function OrderForm({
             id="quantity"
             type="text"
             inputMode="numeric"
-            value={state.quantity}
-            onChange={(event) => handleQuantityChange(event.target.value)}
+            value={quantityText}
+            onChange={(event) => handleQuantityTextChange(event.target.value)}
+            onBlur={handleQuantityBlur}
             className="mt-1 w-20 rounded-sm border border-rule bg-paper px-3 py-1.5 text-center text-graphite focus:border-indigo focus:outline-none focus:ring-1 focus:ring-indigo"
           />
+          {/* The actually-submitted value — always a valid, already-
+              committed 1-20 integer (see commitQuantity), independent of
+              whatever the visible field above happens to be showing
+              mid-edit. */}
           <input type="hidden" name="quantity" value={state.quantity} />
         </div>
 
-        <div className="mt-5 grid grid-cols-1 gap-x-8 gap-y-5 sm:grid-cols-2">
+        {/* Step 50 — once there's more than one suit, this first style
+            block is explicitly labeled "Suit 1" (it always was suit 1's
+            style — see OrderItem's schema comment — this just makes that
+            visible once it matters, i.e. once other suits exist to
+            contrast it with). Nothing here changes for the single-suit
+            case: no label, same grid, same fields, same names. */}
+        {state.quantity > 1 && (
+          <p className="mt-5 text-xs font-semibold uppercase tracking-widest text-ink">
+            {en.orderForm.suitLabelTemplate.replace("{n}", "1")}
+          </p>
+        )}
+        <div className={`grid grid-cols-1 gap-x-8 gap-y-5 sm:grid-cols-2 ${state.quantity > 1 ? "mt-2" : "mt-5"}`}>
           <TileGroup
             legend={en.orderForm.suitType}
             name="suitType"
@@ -661,7 +940,7 @@ export function OrderForm({
           <TileGroup
             legend={en.orderForm.pocket}
             name="pocketOptionId"
-            options={pocketOptions.map((o) => ({ value: o.id, label: o.label }))}
+            options={pocketOptions.map((o) => ({ value: o.id, label: o.label, imageSrc: DESIGN_OPTION_IMAGES[o.code] }))}
             value={state.pocketOptionId}
             onChange={(v) => update("pocketOptionId", v)}
             allowEmpty
@@ -673,9 +952,98 @@ export function OrderForm({
             value={state.gheraType}
             onChange={(v) => update("gheraType", v as GheraType)}
           />
+          {/* Step 57 — Patti Style, immediately below Ghera Style in this
+              same grid (natural DOM/flow order, no separate section).
+              Order-level only, same as every other field in this grid —
+              no per-suit equivalent below (see DraftShape's own comment).
+              Step 58 — spans both grid columns (sm:col-span-2) so its 3
+              options sit in one row on desktop instead of being squeezed
+              into a half-width cell like every other 2-4-option group. */}
+          <div className="sm:col-span-2">
+            <TileGroup
+              legend={en.orderForm.pattiStyle}
+              name="pattiOptionId"
+              options={pattiOptions.map((o) => ({ value: o.id, label: o.label, imageSrc: DESIGN_OPTION_IMAGES[o.code] }))}
+              value={state.pattiOptionId}
+              onChange={(v) => update("pattiOptionId", v)}
+              allowEmpty
+            />
+          </div>
         </div>
 
-        {/* Per-suit overrides */}
+        {/* Step 50 (requirements #5/#6/#8) — suit 2 and beyond each get
+            their own independent style selection here. Measurements are
+            NOT repeated per suit by default (design brief correction):
+            the "Measurements" section above already applies to every
+            suit; only STYLE differs per suit now. Each block starts as a
+            copy of suit 1's style at the moment it was added
+            (commitQuantity) and is freely editable from then on. */}
+        {state.quantity > 1 && (
+          <div className="mt-6 space-y-6 border-t border-rule pt-5">
+            {state.items.slice(1).map((item, index) => {
+              const position = index + 2;
+              return (
+                <div key={position}>
+                  <p className="text-xs font-semibold uppercase tracking-widest text-ink">
+                    {en.orderForm.suitLabelTemplate.replace("{n}", String(position))}
+                  </p>
+                  <div className="mt-2 grid grid-cols-1 gap-x-8 gap-y-5 sm:grid-cols-2">
+                    <TileGroup
+                      legend={en.orderForm.suitType}
+                      name={`item.${position}.suitType`}
+                      options={SUIT_TYPE_OPTIONS}
+                      value={item.style.suitType}
+                      onChange={(v) => setItemStyleField(position, "suitType", v as SuitType)}
+                    />
+                    <TileGroup
+                      legend={en.orderForm.collar}
+                      name={`item.${position}.collarType`}
+                      options={COLLAR_TYPE_OPTIONS}
+                      value={item.style.collarType}
+                      onChange={(v) => setItemStyleField(position, "collarType", v as CollarType)}
+                    />
+                    <TileGroup
+                      legend={en.orderForm.bain}
+                      name={`item.${position}.bainType`}
+                      options={BAIN_TYPE_OPTIONS}
+                      value={item.style.bainType}
+                      onChange={(v) => setItemStyleField(position, "bainType", v as BainType)}
+                    />
+                    <TileGroup
+                      legend={en.orderForm.cuff}
+                      name={`item.${position}.cuffType`}
+                      options={CUFF_TYPE_OPTIONS}
+                      value={item.style.cuffType}
+                      onChange={(v) => setItemStyleField(position, "cuffType", v as CuffType)}
+                    />
+                    <TileGroup
+                      legend={en.orderForm.pocket}
+                      name={`item.${position}.pocketOptionId`}
+                      options={pocketOptions.map((o) => ({ value: o.id, label: o.label, imageSrc: DESIGN_OPTION_IMAGES[o.code] }))}
+                      value={item.style.pocketOptionId}
+                      onChange={(v) => setItemStyleField(position, "pocketOptionId", v)}
+                      allowEmpty
+                    />
+                    <TileGroup
+                      legend={en.orderForm.ghera}
+                      name={`item.${position}.gheraType`}
+                      options={GHERA_TYPE_OPTIONS}
+                      value={item.style.gheraType}
+                      onChange={(v) => setItemStyleField(position, "gheraType", v as GheraType)}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Per-suit measurement overrides — advanced/optional (requirement
+            #8): measurements are shared by default now, so this is
+            deliberately the LAST thing in this section, still collapsed
+            behind its own checkbox per suit exactly as before — nothing
+            about its own behavior, validation, or submitted field names
+            changed. */}
         <div className="mt-6 space-y-3 border-t border-rule pt-5">
           <p className="text-xs font-semibold uppercase tracking-widest text-ink">{en.orderForm.perSuitOverridesHeading}</p>
           {state.items.map((item, index) => {
@@ -762,10 +1130,19 @@ export function OrderForm({
               name="orderDate"
               type="date"
               required
+              readOnly={isEdit}
               value={state.orderDate}
-              onChange={(event) => handleOrderDateChange(event.target.value)}
-              className="mt-1 block w-full rounded-sm border border-rule bg-paper px-3 py-2 text-graphite focus:border-indigo focus:outline-none focus:ring-1 focus:ring-indigo"
+              onChange={(event) => {
+                if (!isEdit) handleOrderDateChange(event.target.value);
+              }}
+              className={`mt-1 block w-full rounded-sm border border-rule px-3 py-2 text-graphite focus:outline-none focus:ring-1 focus:ring-indigo ${
+                isEdit ? "cursor-not-allowed bg-paper/60 text-graphite/50" : "bg-paper focus:border-indigo"
+              }`}
             />
+            {/* Step 53 — Order Date is never editable once an order
+                exists (see OrderEditData's own comment); this reassures
+                the admin it isn't a bug, not a missing feature. */}
+            {isEdit && <p className="mt-0.5 text-xs text-graphite/50">{en.orderForm.orderDateLocked}</p>}
           </div>
         </div>
 
@@ -855,24 +1232,33 @@ export function OrderForm({
           from its own submitted form field; for mode="existing" (Phase
           6) handleSubmit above reads it from `state.sendOnWhatsApp`
           directly, since that path no longer round-trips through a
-          Server Action's own formData.get() call. */}
-      <label className="flex items-center gap-2 rounded-sm border border-rule bg-card px-4 py-3 text-sm text-graphite shadow-sm">
-        <input
-          type="checkbox"
-          checked={state.sendOnWhatsApp}
-          onChange={(event) => update("sendOnWhatsApp", event.target.checked)}
-          className="h-4 w-4 rounded-sm border-rule text-indigo focus:ring-indigo"
-        />
-        {en.orderForm.sendOnWhatsApp}
-      </label>
-      <input type="hidden" name="sendOnWhatsApp" value={state.sendOnWhatsApp ? "on" : "off"} />
+          Server Action's own formData.get() call.
+          Step 53 — hidden entirely in mode="edit": editing an order
+          isn't "save and print/send" the way creating one is, and every
+          existing customer-facing action (Receipt/Work Order/WhatsApp)
+          stays reachable from the order detail page this always returns
+          to. */}
+      {!isEdit && (
+        <>
+          <label className="flex items-center gap-2 rounded-sm border border-rule bg-card px-4 py-3 text-sm text-graphite shadow-sm">
+            <input
+              type="checkbox"
+              checked={state.sendOnWhatsApp}
+              onChange={(event) => update("sendOnWhatsApp", event.target.checked)}
+              className="h-4 w-4 rounded-sm border-rule text-indigo focus:ring-indigo"
+            />
+            {en.orderForm.sendOnWhatsApp}
+          </label>
+          <input type="hidden" name="sendOnWhatsApp" value={state.sendOnWhatsApp ? "on" : "off"} />
+        </>
+      )}
 
       <button
         type="submit"
         disabled={submitting}
         className="w-full rounded-sm bg-indigo px-4 py-3.5 text-base font-medium text-white shadow-sm transition hover:bg-indigo-hover focus:outline-none focus:ring-2 focus:ring-indigo focus:ring-offset-2 disabled:opacity-60"
       >
-        {submitting ? en.orderForm.saving : en.orderForm.save}
+        {submitting ? en.orderForm.saving : isEdit ? en.orderForm.saveChanges : en.orderForm.save}
       </button>
     </form>
   );
@@ -888,7 +1274,7 @@ function TileGroup<T extends string>({
 }: {
   legend: string;
   name: string;
-  options: readonly { value: T; label: string }[];
+  options: readonly { value: T; label: string; imageSrc?: string }[];
   value: T | string;
   onChange: (value: string) => void;
   allowEmpty?: boolean;
@@ -909,7 +1295,13 @@ function TileGroup<T extends string>({
           <StyleTile label={en.orderForm.notSpecified} selected={value === ""} onSelect={() => onChange("")} />
         )}
         {options.map((option) => (
-          <StyleTile key={option.value} label={option.label} selected={value === option.value} onSelect={() => onChange(option.value)} />
+          <StyleTile
+            key={option.value}
+            label={option.label}
+            selected={value === option.value}
+            onSelect={() => onChange(option.value)}
+            imageSrc={option.imageSrc}
+          />
         ))}
       </div>
       <input type="hidden" name={name} value={value} />

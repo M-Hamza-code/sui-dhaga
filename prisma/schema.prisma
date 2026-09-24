@@ -239,8 +239,10 @@ model DesignOption {
   sortOrder Int                  @default(0)
   isActive  Boolean              @default(true)
 
-  pocketOrders Order[] @relation("OrderPocketOption")
-  pattiOrders  Order[] @relation("OrderPattiOption")
+  pocketOrders     Order[]     @relation("OrderPocketOption")
+  pattiOrders      Order[]     @relation("OrderPattiOption")
+  // Step 50 — per-suit pocket override (see OrderItem's own comment).
+  itemPocketOrders OrderItem[] @relation("OrderItemPocketOption")
 
   @@unique([category, code])
   @@index([category, isActive])
@@ -300,9 +302,20 @@ model MeasurementSnapshot {
 
 // One row per physical suit within an Order. A multi-suit order has more
 // than one; every order that existed before Step 9 was backfilled with
-// exactly one (position 1). Style selections (suit type, collar, bain,
-// cuff, pocket, ghera) stay on Order, shared across all of its items —
-// they are not duplicated here.
+// exactly one (position 1).
+//
+// Step 50 — style selections (suit type, collar, bain, cuff, pocket,
+// ghera) used to live ONLY on Order, shared across every item. The
+// business rule turned out to be the opposite of what Step 9 assumed:
+// measurements are normally shared across suits, but STYLE can differ per
+// suit. Order's own style fields are unchanged and still required — they
+// are simply now read as "suit 1's style" (position 1 never gets its own
+// override row below; it always reads Order's fields directly, exactly
+// as every existing single-suit order already does). The six fields
+// below are the per-suit OVERRIDE for suit 2 and beyond: all nullable,
+// all additive — a null value means "same as Order's style", the same
+// inherit-unless-set convention measurementSnapshotId already uses one
+// line down. No existing column was changed, renamed, or dropped.
 model OrderItem {
   id      String @id @default(cuid())
   orderId String
@@ -316,6 +329,20 @@ model OrderItem {
   // toggle is on for this specific suit.
   measurementSnapshotId String?              @unique
   measurementSnapshot   MeasurementSnapshot? @relation("OrderItemSnapshotOverride", fields: [measurementSnapshotId], references: [id])
+
+  // Step 50 — per-suit style override. All six null together = "same
+  // style as the order" (always true for position 1). Set together (the
+  // order form always writes all six at once for an overridden suit,
+  // never a partial mix) when this suit's style was explicitly configured
+  // differently from the order's own style.
+  suitType   SuitType?
+  collarType CollarType?
+  bainType   BainType?
+  cuffType   CuffType?
+  gheraType  GheraType?
+
+  pocketOptionId String?
+  pocketOption   DesignOption? @relation("OrderItemPocketOption", fields: [pocketOptionId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

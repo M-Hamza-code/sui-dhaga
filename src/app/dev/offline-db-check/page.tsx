@@ -201,6 +201,15 @@ export default function OfflineDbCheckPage() {
           orderId: testId,
           position: 1,
           measurementSnapshotId: null,
+          // Step 53 — per-suit style override fields; null here (this
+          // diagnostic row exercises the table shape only, not any real
+          // style override).
+          suitType: null,
+          collarType: null,
+          bainType: null,
+          cuffType: null,
+          gheraType: null,
+          pocketOptionId: null,
           createdAt: now,
           updatedAt: now,
           syncStatus: "pending",

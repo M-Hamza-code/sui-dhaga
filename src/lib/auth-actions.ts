@@ -50,7 +50,12 @@ export async function login(formData: FormData): Promise<void> {
     maxAge: SESSION_COOKIE.maxAge,
   });
 
-  redirect("/dashboard");
+  // Step 50 — a successful login now lands on the real Dashboard
+  // (/overview), not S1 Search/Home. /dashboard itself is completely
+  // unchanged and still fully reachable (nav link, "/" shortcut, Escape,
+  // Ctrl+N with no customer context, the Quick Actions "Search Customer"
+  // link) — only where a fresh login itself lands changed.
+  redirect("/overview");
 }
 
 export async function logout(): Promise<void> {

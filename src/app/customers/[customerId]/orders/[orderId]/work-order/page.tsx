@@ -14,6 +14,14 @@ import {
   WORK_ORDER_UR,
   suitOfTotalUr,
 } from "@/lib/work-order-style-labels";
+import {
+  SUIT_TYPE_IMAGES,
+  COLLAR_TYPE_IMAGES,
+  BAIN_TYPE_IMAGES,
+  CUFF_TYPE_IMAGES,
+  GHERA_TYPE_IMAGES,
+  DESIGN_OPTION_IMAGES,
+} from "@/lib/order-options";
 
 // Karigar Work Order print preview — Urdu/RTL content (Step 22), now laid
 // out two-per-A4-landscape-sheet with a cut guide between them (Step 23,
@@ -43,21 +51,45 @@ export default async function WorkOrderPage({
   const customer = order.customer;
   const orderHref = `/customers/${customer.id}/orders/${order.id}`;
 
-  // Only the style groups that actually have a value print at all — the
-  // 5 enum-backed groups always do (none of those columns are nullable),
-  // Pocket only when one was actually selected. Pocket's real design
-  // names aren't confirmed data yet (see work-order-style-labels.ts), so
-  // its box shows the DesignOption's own stored label as-is rather than
-  // an invented Urdu translation.
-  const styleBoxes: string[] = [
-    SUIT_TYPE_UR[order.suitType],
-    COLLAR_TYPE_UR[order.collarType],
-    BAIN_TYPE_UR[order.bainType],
-    CUFF_TYPE_UR[order.cuffType],
-    GHERA_TYPE_UR[order.gheraType],
-  ];
-  if (order.pocketOption) {
-    styleBoxes.push(order.pocketOption.label);
+  // Step 50 — each suit's own style boxes, resolved by getOrderPrintData
+  // (item override, or inherited from the order — same rule as the
+  // measurement snapshot). Was a single shared array computed once from
+  // order.* directly; now built per suit so a multi-suit order where
+  // suit 2 has a different collar/cuff/etc. than suit 1 prints correctly
+  // on each half. A single-suit order (or any suit with no override)
+  // still resolves to exactly the order's own style — unchanged output
+  // for every existing order. Only the 5 enum-backed groups always show
+  // (none of those columns are nullable); Pocket only when one was
+  // actually selected for that suit. Pocket's real design names aren't
+  // confirmed data yet (see work-order-style-labels.ts), so its box shows
+  // the DesignOption's own stored label as-is rather than an invented
+  // Urdu translation.
+  //
+  // Step 58 — each box now also carries `imageSrc`, the same design
+  // photo the on-screen Order Form tile for that exact selection shows
+  // (SUIT_TYPE_IMAGES etc. / DESIGN_OPTION_IMAGES — order-options.ts's
+  // single source of truth, keyed the same way its label counterparts
+  // already are). Never guessed/invented here — a category with no
+  // matching image just renders a box with no photo, same as an
+  // unselected Pocket/Patti already renders no box at all. Patti Style
+  // is order-level only (no per-suit override — see Order.pattiOptionId's
+  // own schema comment), so every suit's box for it is the same value,
+  // read from `order.pattiOption` rather than `suit.style`.
+  function styleBoxesForSuit(suit: OrderPrintSuit): { label: string; imageSrc?: string }[] {
+    const boxes: { label: string; imageSrc?: string }[] = [
+      { label: SUIT_TYPE_UR[suit.style.suitType], imageSrc: SUIT_TYPE_IMAGES[suit.style.suitType] },
+      { label: COLLAR_TYPE_UR[suit.style.collarType], imageSrc: COLLAR_TYPE_IMAGES[suit.style.collarType] },
+      { label: BAIN_TYPE_UR[suit.style.bainType], imageSrc: BAIN_TYPE_IMAGES[suit.style.bainType] },
+      { label: CUFF_TYPE_UR[suit.style.cuffType], imageSrc: CUFF_TYPE_IMAGES[suit.style.cuffType] },
+      { label: GHERA_TYPE_UR[suit.style.gheraType], imageSrc: GHERA_TYPE_IMAGES[suit.style.gheraType] },
+    ];
+    if (suit.style.pocketOption) {
+      boxes.push({ label: suit.style.pocketOption.label, imageSrc: DESIGN_OPTION_IMAGES[suit.style.pocketOption.code] });
+    }
+    if (order.pattiOption) {
+      boxes.push({ label: order.pattiOption.label, imageSrc: DESIGN_OPTION_IMAGES[order.pattiOption.code] });
+    }
+    return boxes;
   }
 
   const deliveryDateText = order.deliveryDate ? formatDateNumeric(order.deliveryDate) : "—";
@@ -93,7 +125,7 @@ export default async function WorkOrderPage({
             }`}
             style={{ aspectRatio: "297 / 210" }}
           >
-            <WorkOrderHalf order={order} suit={pair[0]} totalSuits={suits.length} styleBoxes={styleBoxes} deliveryDateText={deliveryDateText} />
+            <WorkOrderHalf order={order} suit={pair[0]} totalSuits={suits.length} styleBoxes={styleBoxesForSuit(pair[0])} deliveryDateText={deliveryDateText} />
 
             {/* The dashed edge here IS the cut/fold guide (design brief
                 §7a) — a plain print-safe border, not application content,
@@ -103,7 +135,7 @@ export default async function WorkOrderPage({
                 duplicate. */}
             <div className="border-l border-dashed border-graphite/40 print:border-black">
               {pair[1] && (
-                <WorkOrderHalf order={order} suit={pair[1]} totalSuits={suits.length} styleBoxes={styleBoxes} deliveryDateText={deliveryDateText} />
+                <WorkOrderHalf order={order} suit={pair[1]} totalSuits={suits.length} styleBoxes={styleBoxesForSuit(pair[1])} deliveryDateText={deliveryDateText} />
               )}
             </div>
           </div>
@@ -123,7 +155,7 @@ function WorkOrderHalf({
   order: OrderPrintData["order"];
   suit: OrderPrintSuit;
   totalSuits: number;
-  styleBoxes: string[];
+  styleBoxes: { label: string; imageSrc?: string }[];
   deliveryDateText: string;
 }) {
   return (
@@ -146,8 +178,8 @@ function WorkOrderHalf({
 
       {styleBoxes.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2 border-t border-graphite pt-3 print:border-black">
-          {styleBoxes.map((label, index) => (
-            <WorkOrderStyleBox key={index} label={label} />
+          {styleBoxes.map((box, index) => (
+            <WorkOrderStyleBox key={index} label={box.label} imageSrc={box.imageSrc} />
           ))}
         </div>
       )}
