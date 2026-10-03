@@ -78,11 +78,21 @@ export default async function WorkOrderPage({
   function styleBoxesForSuit(suit: OrderPrintSuit): { label: string; imageSrc?: string }[] {
     const boxes: { label: string; imageSrc?: string }[] = [
       { label: SUIT_TYPE_UR[suit.style.suitType], imageSrc: SUIT_TYPE_IMAGES[suit.style.suitType] },
-      { label: COLLAR_TYPE_UR[suit.style.collarType], imageSrc: COLLAR_TYPE_IMAGES[suit.style.collarType] },
-      { label: BAIN_TYPE_UR[suit.style.bainType], imageSrc: BAIN_TYPE_IMAGES[suit.style.bainType] },
       { label: CUFF_TYPE_UR[suit.style.cuffType], imageSrc: CUFF_TYPE_IMAGES[suit.style.cuffType] },
       { label: GHERA_TYPE_UR[suit.style.gheraType], imageSrc: GHERA_TYPE_IMAGES[suit.style.gheraType] },
     ];
+    // Step 63 — Collar and Bain are now a single combined choice
+    // (exactly one set, never both, never neither) — each box only
+    // prints when that field actually has a value, the same conditional
+    // pattern Pocket/Patti already use just below. A legacy suit saved
+    // before this change may still have both set and will correctly
+    // print both boxes.
+    if (suit.style.collarType) {
+      boxes.push({ label: COLLAR_TYPE_UR[suit.style.collarType], imageSrc: COLLAR_TYPE_IMAGES[suit.style.collarType] });
+    }
+    if (suit.style.bainType) {
+      boxes.push({ label: BAIN_TYPE_UR[suit.style.bainType], imageSrc: BAIN_TYPE_IMAGES[suit.style.bainType] });
+    }
     if (suit.style.pocketOption) {
       boxes.push({ label: suit.style.pocketOption.label, imageSrc: DESIGN_OPTION_IMAGES[suit.style.pocketOption.code] });
     }
@@ -120,20 +130,54 @@ export default async function WorkOrderPage({
         {sheets.map((pair, sheetIndex) => (
           <div
             key={sheetIndex}
-            className={`grid grid-cols-2 overflow-hidden rounded-sm border border-rule bg-card print:break-inside-avoid print:rounded-none print:border-2 print:border-black ${
-              sheetIndex < sheets.length - 1 ? "print:break-after-page" : ""
-            }`}
-            style={{ aspectRatio: "297 / 210" }}
+            // Step 59 fixed the forced HEIGHT (aspect-ratio now print-
+            // only). Step 60 fixed the remaining forced WIDTH for a
+            // sheet with only one real suit, but used a PERCENTAGE
+            // (max-w-[50%]) — which, nested inside the outer card's own
+            // w-fit (Step 61, needed so the card hugs its actual content
+            // instead of staying a fixed wide box), is a genuinely
+            // ambiguous CSS combination: a percentage-width descendant
+            // inside a shrink-to-fit ancestor has no single well-defined
+            // resolution, and browsers do not compute it consistently —
+            // confirmed by direct measurement (an unexplained ~153px gap
+            // alongside a too-narrow receipt, neither of which was ever
+            // the intended "half of the original width" design).
+            //
+            // Step 62 — replaces the percentage with the exact ABSOLUTE
+            // pixel width that half of the original grid-cols-2 sheet
+            // has always computed to, given this route's own unchanged
+            // architecture constants (none customized in
+            // tailwind.config.ts): the outer wrapper's max-w-5xl (1024px)
+            // minus its own p-6 (24px each side) minus this card's own
+            // p-8 (32px each side), halved — (1024 - 48 - 64) / 2 =
+            // 456px. An absolute value has no ancestor to resolve
+            // against, so nesting it inside the card's w-fit is no
+            // longer ambiguous — the card now hugs this exact width with
+            // only its own p-8 as the gap, deterministically, the same
+            // in every browser. Printed output is completely unaffected:
+            // print: variants still restore the exact original full-
+            // width, two-column, A4-landscape shape (print:grid-cols-2
+            // print:max-w-none print:mx-0), because the physical two-
+            // per-A4, cut-down-the-middle page this was built for still
+            // needs consistent paper dimensions regardless of a blank
+            // half.
+            className={`overflow-hidden rounded-sm border border-rule bg-card print:aspect-[297/210] print:break-inside-avoid print:rounded-none print:border-2 print:border-black ${
+              pair[1]
+                ? "grid grid-cols-2"
+                : "mx-auto grid max-w-[456px] grid-cols-1 print:mx-0 print:max-w-none print:grid-cols-2"
+            } ${sheetIndex < sheets.length - 1 ? "print:break-after-page" : ""}`}
           >
             <WorkOrderHalf order={order} suit={pair[0]} totalSuits={suits.length} styleBoxes={styleBoxesForSuit(pair[0])} deliveryDateText={deliveryDateText} />
 
             {/* The dashed edge here IS the cut/fold guide (design brief
                 §7a) — a plain print-safe border, not application content,
                 sitting exactly on the boundary between the two halves.
-                Left empty (no WorkOrderHalf rendered inside) when this
-                sheet only has one suit — a genuinely blank half, never a
-                duplicate. */}
-            <div className="border-l border-dashed border-graphite/40 print:border-black">
+                On screen, with nothing in pair[1], this whole column is
+                now hidden rather than rendered blank-but-visible (Step
+                60) — print:block brings it straight back for the actual
+                paper output, where a genuinely blank cut-away half is
+                still exactly what's wanted. */}
+            <div className={`border-l border-dashed border-graphite/40 print:border-black ${pair[1] ? "" : "hidden print:block"}`}>
               {pair[1] && (
                 <WorkOrderHalf order={order} suit={pair[1]} totalSuits={suits.length} styleBoxes={styleBoxesForSuit(pair[1])} deliveryDateText={deliveryDateText} />
               )}

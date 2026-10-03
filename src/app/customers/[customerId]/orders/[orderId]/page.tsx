@@ -160,8 +160,18 @@ export default async function OrderDetailPage({
           <SectionCard title={order.items.length > 1 ? en.orderDetail.designSelectionsSuit1 : en.orderDetail.designSelections}>
             <dl className="divide-y divide-rule/60 text-sm">
               <Row label={en.orderDetail.suitType} value={SUIT_TYPE_LABELS[order.suitType]} />
-              <Row label={en.orderDetail.collar} value={COLLAR_TYPE_LABELS[order.collarType]} />
-              <Row label={en.orderDetail.bain} value={BAIN_TYPE_LABELS[order.bainType]} />
+              {/* Step 63 — Collar and Bain are now a single combined
+                  choice (exactly one set, never both, never neither) for
+                  any order created/edited since; each row is shown only
+                  when that field actually has a value, same conditional
+                  pattern Pocket/Patti already use just below. A legacy
+                  order saved before this change may still have both set
+                  in the database (never retroactively altered — see the
+                  migration's own comment) and will correctly show both
+                  rows, an accurate reflection of what was actually
+                  recorded at the time. */}
+              {order.collarType && <Row label={en.orderDetail.collar} value={COLLAR_TYPE_LABELS[order.collarType]} />}
+              {order.bainType && <Row label={en.orderDetail.bain} value={BAIN_TYPE_LABELS[order.bainType]} />}
               <Row label={en.orderDetail.cuff} value={CUFF_TYPE_LABELS[order.cuffType]} />
               <Row label={en.orderDetail.pocket} value={order.pocketOption?.label ?? "—"} />
               {order.pattiOption && <Row label={en.orderDetail.patti} value={order.pattiOption.label} />}
@@ -193,8 +203,9 @@ export default async function OrderDetailPage({
                     {item.suitType && (
                       <dl className="mt-2 divide-y divide-rule/50 rounded-sm border border-rule/60 bg-card px-3 text-sm">
                         <Row label={en.orderDetail.suitType} value={SUIT_TYPE_LABELS[item.suitType]} />
-                        <Row label={en.orderDetail.collar} value={COLLAR_TYPE_LABELS[item.collarType!]} />
-                        <Row label={en.orderDetail.bain} value={BAIN_TYPE_LABELS[item.bainType!]} />
+                        {/* Step 63 — same combined-choice conditional rendering as the order-level rows above. */}
+                        {item.collarType && <Row label={en.orderDetail.collar} value={COLLAR_TYPE_LABELS[item.collarType]} />}
+                        {item.bainType && <Row label={en.orderDetail.bain} value={BAIN_TYPE_LABELS[item.bainType]} />}
                         <Row label={en.orderDetail.cuff} value={CUFF_TYPE_LABELS[item.cuffType!]} />
                         <Row label={en.orderDetail.pocket} value={item.pocketOption?.label ?? "—"} />
                         <Row label={en.orderDetail.ghera} value={GHERA_TYPE_LABELS[item.gheraType!]} />

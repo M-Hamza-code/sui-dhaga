@@ -182,9 +182,19 @@ model Order {
   orderDate    DateTime
   deliveryDate DateTime?
 
-  suitType   SuitType
-  collarType CollarType
-  bainType   BainType
+  suitType SuitType
+  // Step 63 — Collar and Bain are now a single combined choice, not two
+  // independent required fields: exactly one of the two is ever set,
+  // never both, never neither (enforced in order-actions.ts's
+  // validateOrderInput — a plain scalar-column pair has no CHECK
+  // constraint mechanism in this schema style, so this is an
+  // application-level invariant, the same way balanceAmount is always
+  // server-computed rather than DB-constrained). Nullable so a genuinely
+  // unset choice is honestly representable, not faked with a hidden
+  // default — see order-form.tsx's own comment on why this couldn't be
+  // done as a pure UI-only change.
+  collarType CollarType?
+  bainType   BainType?
   cuffType   CuffType
   gheraType  GheraType
 

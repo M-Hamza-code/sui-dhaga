@@ -103,8 +103,11 @@ export interface LocalOrder {
   orderDate: string; // ISO
   deliveryDate: string | null; // ISO
   suitType: SuitType;
-  collarType: CollarType;
-  bainType: BainType;
+  // Step 63 — combined single choice: exactly one of these two is ever
+  // non-null, never both, never neither (see order-actions.ts's own
+  // comment on the same rule server-side).
+  collarType: CollarType | null;
+  bainType: BainType | null;
   cuffType: CuffType;
   gheraType: GheraType;
   pocketOptionId: string | null;

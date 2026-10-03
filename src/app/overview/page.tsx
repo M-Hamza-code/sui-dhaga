@@ -47,8 +47,10 @@ export default async function OverviewPage() {
       // Same where-clause as the Order Board's own Ready tab count.
       prisma.order.count({ where: { status: "READY" } }),
       // Same where-clause as dashboard/page.tsx's existing bottom strip.
+      // Step 63 — Delivered orders excluded (their balance still exists
+      // on the order row, just no longer counted here).
       prisma.order.aggregate({
-        where: { balanceAmount: { gt: 0 } },
+        where: { balanceAmount: { gt: 0 }, status: { not: "DELIVERED" } },
         _sum: { balanceAmount: true },
       }),
       prisma.shopSettings.findUnique({ where: { singleton: true } }),

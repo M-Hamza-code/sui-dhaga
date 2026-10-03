@@ -74,8 +74,12 @@ const SECTION_LABELS: Record<string, string> = {
 // beyond can each hold an independent choice for the same six fields.
 interface SuitStyleState {
   suitType: SuitType;
-  collarType: CollarType;
-  bainType: BainType;
+  // Step 63 — combined single choice: exactly one of these two is ever
+  // non-empty, never both, never neither. "" means "not selected", the
+  // same empty-string-sentinel convention pocketOptionId/pattiOptionId
+  // already use for their own optional-selection fields.
+  collarType: CollarType | "";
+  bainType: BainType | "";
   cuffType: CuffType;
   gheraType: GheraType;
   pocketOptionId: string;
@@ -105,8 +109,11 @@ export interface OrderEditData {
   orderDateDisplay: string;
   deliveryDate: string; // yyyy-mm-dd, or ""
   suitType: SuitType;
-  collarType: CollarType;
-  bainType: BainType;
+  // Step 63 — see SuitStyleState's own comment: exactly one of these two
+  // is set on the server, and this may legitimately be "" for whichever
+  // one isn't.
+  collarType: CollarType | "";
+  bainType: BainType | "";
   cuffType: CuffType;
   gheraType: GheraType;
   pocketOptionId: string;
@@ -127,19 +134,6 @@ export interface OrderEditData {
   }[];
 }
 
-/**
- * Rough (not cent-exact) suggestion only — total * percent / 100, shown
- * as a starting point the owner can freely edit before submit. The
- * authoritative balance is still always calculateBalance() server-side
- * (money.ts), never this.
- */
-function computeAdvanceSuggestion(totalAmount: string, percent: string): string {
-  const total = Number(totalAmount);
-  const pct = Number(percent);
-  if (!Number.isFinite(total) || !Number.isFinite(pct)) return "";
-  return ((total * pct) / 100).toFixed(2);
-}
-
 interface DraftShape {
   // Step 25 — only ever read/written in mode="new"; simply carried along
   // (always empty) for an existing customer, same as any other field
@@ -152,8 +146,9 @@ interface DraftShape {
   deliveryDate: string;
   deliveryTouched: boolean;
   suitType: SuitType;
-  collarType: CollarType;
-  bainType: BainType;
+  // Step 63 — see SuitStyleState's own comment.
+  collarType: CollarType | "";
+  bainType: BainType | "";
   cuffType: CuffType;
   gheraType: GheraType;
   pocketOptionId: string;
@@ -186,11 +181,45 @@ function addDays(iso: string, days: number): string {
   return toISODate(d);
 }
 
+/**
+ * Step 64 — corrects Step 63's own mistake: multiplying ONE suit's price
+ * by quantity assumed every suit shared the same type, which per-suit
+ * overrides (Suit 2+) already made false. Total must be the SUM of each
+ * individual suit's own configured default price — a Sada suit plus a
+ * Ghum Silai suit is 1000+1500, never 1000×2.
+ *
+ * Suit 1 always reads the order-level `orderSuitType` (never its own
+ * `items[0].style.suitType`, which is only ever read/submitted for
+ * position 2+ — the same rule every other per-suit-style read in this
+ * file already follows). Every other suit reads its own
+ * `items[i].style.suitType`, which starts as a copy of suit 1's type
+ * when that position is added (see suitStyleFrom/commitQuantity) but can
+ * be changed independently from then on.
+ *
+ * Returns null — meaning "don't touch Total" — if even one suit's type
+ * has no configured default price, rather than silently summing a
+ * partial/misleading total; the same "only ever suggest a value we
+ * actually have real data for" rule the original single-suit default
+ * always followed.
+ */
+function computeAutoTotal(orderSuitType: SuitType, items: { style: SuitStyleState }[], defaultPrices: DefaultPricesMap): string | null {
+  const suitTypes = [orderSuitType, ...items.slice(1).map((item) => item.style.suitType)];
+  let sum = 0;
+  for (const suitType of suitTypes) {
+    const price = defaultPrices[suitType];
+    if (!price) return null;
+    const n = Number(price);
+    if (!Number.isFinite(n)) return null;
+    sum += n;
+  }
+  return sum.toFixed(2);
+}
+
 /** The starting style for a freshly-added suit position — a plain copy of the given values, never a shared reference (each suit must be independently editable afterward). */
 function suitStyleFrom(values: {
   suitType: SuitType;
-  collarType: CollarType;
-  bainType: BainType;
+  collarType: CollarType | "";
+  bainType: BainType | "";
   cuffType: CuffType;
   gheraType: GheraType;
   pocketOptionId: string;
@@ -206,10 +235,14 @@ function makeInitialState(measurement: PrefillMeasurement | null, defaultPrices:
   // real "today" default is filled in by the mount effect below instead,
   // which only ever runs in the browser.
   const initialSuitType = SUIT_TYPE_OPTIONS[0].value;
+  const initialQuantity = 1;
+  // Step 63 — Collar and Bain now start genuinely unselected (""), no
+  // default from either list — the admin must explicitly pick one. Every
+  // other style field's default-to-first-option behavior is unchanged.
   const initialStyle = suitStyleFrom({
     suitType: initialSuitType,
-    collarType: COLLAR_TYPE_OPTIONS[0].value,
-    bainType: BAIN_TYPE_OPTIONS[0].value,
+    collarType: "",
+    bainType: "",
     cuffType: CUFF_TYPE_OPTIONS[0].value,
     gheraType: GHERA_TYPE_OPTIONS[0].value,
     pocketOptionId: "",
@@ -223,20 +256,27 @@ function makeInitialState(measurement: PrefillMeasurement | null, defaultPrices:
     deliveryDate: "",
     deliveryTouched: false,
     suitType: initialSuitType,
-    collarType: COLLAR_TYPE_OPTIONS[0].value,
-    bainType: BAIN_TYPE_OPTIONS[0].value,
+    collarType: "",
+    bainType: "",
     cuffType: CUFF_TYPE_OPTIONS[0].value,
     gheraType: GHERA_TYPE_OPTIONS[0].value,
     pocketOptionId: "",
     pattiOptionId: "",
-    quantity: 1,
+    quantity: initialQuantity,
     // Step 18: a configured Settings default price for the initially-
     // selected suit type pre-fills Total — same as if the owner had just
     // clicked that tile. Still just a starting point: typing in the
     // field (totalTouched) stops any further auto-fill immediately.
-    totalAmount: defaultPrices[initialSuitType] ?? "",
+    // Step 64 — at the initial quantity of 1 this is just that one
+    // suit's own price (computeAutoTotal with a single-item list); see
+    // handleSuitTypeChange/commitQuantity/setItemStyleField for what
+    // keeps this correct as quantity changes or per-suit types diverge.
+    totalAmount: computeAutoTotal(initialSuitType, [{ style: initialStyle }], defaultPrices) ?? "",
     totalTouched: false,
-    advanceAmount: "",
+    // Step 63 — Advance Paid now genuinely defaults to 0, not a Settings-
+    // percentage-based suggestion (see the removed advanceValue/
+    // computeAdvanceSuggestion logic below) and not the total.
+    advanceAmount: "0.00",
     advanceTouched: false,
     note: "",
     // Checked by default for a new order (design brief §9): "There is
@@ -525,7 +565,15 @@ export function OrderForm({
           }),
         });
       }
-      return { ...prev, quantity: n, items };
+      // Step 64 — Total = SUM of each individual suit's own price, not
+      // one price × quantity (a newly-added suit starts as a copy of
+      // suit 1's type, so growing quantity still sums correctly until
+      // the owner changes one of the new suits' own type). Only ever
+      // recomputes a still-untouched Total, same "starting point, never
+      // overwrite a real edit" rule handleSuitTypeChange's own price
+      // fill already follows.
+      const totalAmount = !prev.totalTouched ? (computeAutoTotal(prev.suitType, items, defaultPrices) ?? prev.totalAmount) : prev.totalAmount;
+      return { ...prev, quantity: n, items, totalAmount };
     });
     setItemActiveFields((prev) => {
       const next = prev.slice(0, n);
@@ -582,6 +630,38 @@ export function OrderForm({
     setState((prev) => {
       const items = [...prev.items];
       items[position - 1] = { ...items[position - 1], style: { ...items[position - 1].style, [key]: value } };
+      // Step 64 — a per-suit Suit Type change also changes that suit's
+      // own price, so Total (still a SUM across every suit) needs the
+      // same still-untouched-only recompute every other suitType change
+      // already gets. No other per-suit field (collar/bain/cuff/ghera/
+      // pocket) affects price, so this only fires for "suitType".
+      const totalAmount =
+        key === "suitType" && !prev.totalTouched ? (computeAutoTotal(prev.suitType, items, defaultPrices) ?? prev.totalAmount) : prev.totalAmount;
+      return { ...prev, items, totalAmount };
+    });
+  }
+
+  // Step 63 — Collar and Bain are one combined choice: picking a Collar
+  // always clears any selected Bain, and vice versa, so at most one of
+  // the two is ever set. Order-level (suit 1) pair — position 2+'s own
+  // pair is setItemCollarField/setItemBainField just below.
+  function handleCollarChange(value: CollarType | "") {
+    setState((prev) => ({ ...prev, collarType: value, bainType: "" }));
+  }
+  function handleBainChange(value: BainType | "") {
+    setState((prev) => ({ ...prev, bainType: value, collarType: "" }));
+  }
+  function setItemCollarField(position: number, value: CollarType | "") {
+    setState((prev) => {
+      const items = [...prev.items];
+      items[position - 1] = { ...items[position - 1], style: { ...items[position - 1].style, collarType: value, bainType: "" } };
+      return { ...prev, items };
+    });
+  }
+  function setItemBainField(position: number, value: BainType | "") {
+    setState((prev) => {
+      const items = [...prev.items];
+      items[position - 1] = { ...items[position - 1], style: { ...items[position - 1].style, bainType: value, collarType: "" } };
       return { ...prev, items };
     });
   }
@@ -602,8 +682,10 @@ export function OrderForm({
       // Only ever fills a blank/not-yet-touched Total — never overwrites
       // something the owner already typed, and never clears a value down
       // to blank just because the newly-selected type has no configured
-      // default price.
-      totalAmount: !prev.totalTouched && defaultPrices[value] ? defaultPrices[value]! : prev.totalAmount,
+      // default price. Step 64 — sums suit 1's NEW price with every
+      // other suit's own unchanged price, same rule commitQuantity's own
+      // totalAmount recompute follows.
+      totalAmount: !prev.totalTouched ? (computeAutoTotal(value, prev.items, defaultPrices) ?? prev.totalAmount) : prev.totalAmount,
     }));
   }
 
@@ -719,22 +801,18 @@ export function OrderForm({
     }
   }
 
-  // Step 18: while the owner hasn't typed into Advance themselves, its
-  // displayed (and submitted — this IS the controlled input's value)
-  // amount is a live-computed suggestion from Settings' default advance
-  // percentage. Purely a starting point: the moment they type anything,
-  // advanceTouched takes over and this suggestion stops applying.
-  const advanceValue =
-    !state.advanceTouched && defaultAdvancePercent && MONEY_REGEX.test(state.totalAmount)
-      ? computeAdvanceSuggestion(state.totalAmount, defaultAdvancePercent)
-      : state.advanceAmount;
-
-  const balance = MONEY_REGEX.test(state.totalAmount) && MONEY_REGEX.test(advanceValue)
-    ? calculateBalance(state.totalAmount, advanceValue)
+  // Step 63 — Advance Paid no longer has a live-computed Settings-
+  // percentage suggestion; it genuinely defaults to 0.00 (see
+  // makeInitialState) and only ever changes when the owner types into it
+  // themselves. `defaultAdvancePercent` is still accepted as a prop
+  // (every caller still passes it; removing the plumbing would be an
+  // unrelated change) but is no longer consulted here.
+  const balance = MONEY_REGEX.test(state.totalAmount) && MONEY_REGEX.test(state.advanceAmount)
+    ? calculateBalance(state.totalAmount, state.advanceAmount)
     : null;
   const advanceExceedsTotal =
-    MONEY_REGEX.test(state.totalAmount) && MONEY_REGEX.test(advanceValue)
-      ? !isAdvanceWithinTotal(state.totalAmount, advanceValue)
+    MONEY_REGEX.test(state.totalAmount) && MONEY_REGEX.test(state.advanceAmount)
+      ? !isAdvanceWithinTotal(state.totalAmount, state.advanceAmount)
       : false;
 
   if (notFoundEverywhere) {
@@ -916,19 +994,29 @@ export function OrderForm({
             value={state.suitType}
             onChange={(v) => handleSuitTypeChange(v as SuitType)}
           />
+          {/* Step 63 — Collar and Bain are one combined choice: exactly
+              one of the two tile groups can have a selection at a time,
+              enforced by handleCollarChange/handleBainChange each
+              clearing the other's field. Both start unselected (""),
+              same as Pocket/Patti — allowEmpty renders each group's own
+              "Not specified" tile, doubling as the visible "nothing
+              chosen yet" state and letting an admin explicitly clear a
+              choice back to none. */}
           <TileGroup
             legend={en.orderForm.collar}
             name="collarType"
             options={COLLAR_TYPE_OPTIONS}
             value={state.collarType}
-            onChange={(v) => update("collarType", v as CollarType)}
+            onChange={(v) => handleCollarChange(v as CollarType | "")}
+            allowEmpty
           />
           <TileGroup
             legend={en.orderForm.bain}
             name="bainType"
             options={BAIN_TYPE_OPTIONS}
             value={state.bainType}
-            onChange={(v) => update("bainType", v as BainType)}
+            onChange={(v) => handleBainChange(v as BainType | "")}
+            allowEmpty
           />
           <TileGroup
             legend={en.orderForm.cuff}
@@ -995,19 +1083,22 @@ export function OrderForm({
                       value={item.style.suitType}
                       onChange={(v) => setItemStyleField(position, "suitType", v as SuitType)}
                     />
+                    {/* Step 63 — same combined-choice rule as the order-level pair above, applied per-suit. */}
                     <TileGroup
                       legend={en.orderForm.collar}
                       name={`item.${position}.collarType`}
                       options={COLLAR_TYPE_OPTIONS}
                       value={item.style.collarType}
-                      onChange={(v) => setItemStyleField(position, "collarType", v as CollarType)}
+                      onChange={(v) => setItemCollarField(position, v as CollarType | "")}
+                      allowEmpty
                     />
                     <TileGroup
                       legend={en.orderForm.bain}
                       name={`item.${position}.bainType`}
                       options={BAIN_TYPE_OPTIONS}
                       value={item.style.bainType}
-                      onChange={(v) => setItemStyleField(position, "bainType", v as BainType)}
+                      onChange={(v) => setItemBainField(position, v as BainType | "")}
+                      allowEmpty
                     />
                     <TileGroup
                       legend={en.orderForm.cuff}
@@ -1161,7 +1252,11 @@ export function OrderForm({
               onChange={(event) => handleTotalAmountChange(event.target.value)}
               className="mt-1 block w-full rounded-sm border border-rule bg-paper px-3 py-2.5 text-right text-lg font-semibold tabular-nums text-graphite focus:border-indigo focus:outline-none focus:ring-1 focus:ring-indigo"
             />
-            {!state.totalTouched && defaultPrices[state.suitType] === state.totalAmount && state.totalAmount && (
+            {/* Step 64 — the hint now compares against the correctly
+                summed expected default (each suit's own price, not one
+                price × Number of Suits), so it still only shows while
+                Total genuinely still matches that computed sum. */}
+            {!state.totalTouched && state.totalAmount === computeAutoTotal(state.suitType, state.items, defaultPrices) && (
               <p className="mt-0.5 text-xs text-graphite/50">{en.orderForm.totalSuggested}</p>
             )}
           </div>
@@ -1175,13 +1270,10 @@ export function OrderForm({
               type="text"
               inputMode="decimal"
               required
-              value={advanceValue}
+              value={state.advanceAmount}
               onChange={(event) => handleAdvanceAmountChange(event.target.value)}
               className="mt-1 block w-full rounded-sm border border-rule bg-paper px-3 py-2.5 text-right text-lg font-semibold tabular-nums text-graphite focus:border-indigo focus:outline-none focus:ring-1 focus:ring-indigo"
             />
-            {!state.advanceTouched && advanceValue && advanceValue !== state.advanceAmount && (
-              <p className="mt-0.5 text-xs text-graphite/50">{en.orderForm.advanceSuggested}</p>
-            )}
           </div>
         </div>
 

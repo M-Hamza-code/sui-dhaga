@@ -44,40 +44,59 @@ import { applyOrderStatusUpdate } from "@/lib/order-status-update";
 // not a real business limit the owner would ever approach.
 const MAX_SUITS_PER_ORDER = 20;
 
-const orderInputSchema = z.object({
-  orderDate: z.string().trim().min(1, "Order Date is required"),
-  deliveryDate: z.string().trim().optional(),
-  suitType: z.enum(["SIMPLE", "GARAM_SILAI", "DESIGNING", "DOUBLE_STITCH", "BARABAR_SILAI"], {
-    errorMap: () => ({ message: "Select a Suit Type" }),
-  }),
-  collarType: z.enum(["POINT", "FRENCH", "TIE"], { errorMap: () => ({ message: "Select a Collar" }) }),
-  bainType: z.enum(["FULL_BAIN", "HALF_GOL_BAIN", "CUT_BAIN"], { errorMap: () => ({ message: "Select a Bain" }) }),
-  cuffType: z.enum(["NOK_DAR", "CUT", "GOL", "FOLD"], { errorMap: () => ({ message: "Select a Cuff" }) }),
-  gheraType: z.enum(["GOL", "SEEDHA"], { errorMap: () => ({ message: "Select a Ghera Style" }) }),
-  // Optional: the DesignOption FK is nullable in the schema.
-  pocketOptionId: z.string().trim().optional(),
-  // Step 57 — Patti Style is now collected on the form too, same
-  // optional-DesignOption-FK shape as Pocket above.
-  pattiOptionId: z.string().trim().optional(),
-  totalAmount: z.string().trim().regex(MONEY_REGEX, "Total Amount must be a valid non-negative number"),
-  advanceAmount: z.string().trim().regex(MONEY_REGEX, "Advance Amount must be a valid non-negative number"),
-  note: z.string().trim().max(1000, "Note is too long").optional(),
-});
+// Step 63 — Collar and Bain are now a single combined choice: exactly
+// one of the two, never both, never neither. Each is individually
+// `.optional()` (schema-level, matching Order.collarType/bainType now
+// both being nullable columns), with a `.refine()` below enforcing the
+// "exactly one" cross-field rule zod's per-field validators can't
+// express alone — the same shape/spirit as validateDesignOption's own
+// "not selected — allowed" nullable-FK handling, just for a pair of
+// mutually-exclusive enums instead of one optional relation.
+const collarBainRefinement = <T extends { collarType?: string; bainType?: string }>(data: T) =>
+  (data.collarType ? 1 : 0) + (data.bainType ? 1 : 0) === 1;
+const COLLAR_BAIN_ERROR = "Select either a Collar or a Bain (not both, and not neither)";
+
+const orderInputSchema = z
+  .object({
+    orderDate: z.string().trim().min(1, "Order Date is required"),
+    deliveryDate: z.string().trim().optional(),
+    suitType: z.enum(["SIMPLE", "GARAM_SILAI", "DESIGNING", "DOUBLE_STITCH", "BARABAR_SILAI"], {
+      errorMap: () => ({ message: "Select a Suit Type" }),
+    }),
+    collarType: z.enum(["POINT", "FRENCH", "TIE"]).optional(),
+    bainType: z.enum(["FULL_BAIN", "HALF_GOL_BAIN", "CUT_BAIN"]).optional(),
+    cuffType: z.enum(["NOK_DAR", "CUT", "GOL", "FOLD"], { errorMap: () => ({ message: "Select a Cuff" }) }),
+    gheraType: z.enum(["GOL", "SEEDHA"], { errorMap: () => ({ message: "Select a Ghera Style" }) }),
+    // Optional: the DesignOption FK is nullable in the schema.
+    pocketOptionId: z.string().trim().optional(),
+    // Step 57 — Patti Style is now collected on the form too, same
+    // optional-DesignOption-FK shape as Pocket above.
+    pattiOptionId: z.string().trim().optional(),
+    totalAmount: z.string().trim().regex(MONEY_REGEX, "Total Amount must be a valid non-negative number"),
+    advanceAmount: z.string().trim().regex(MONEY_REGEX, "Advance Amount must be a valid non-negative number"),
+    note: z.string().trim().max(1000, "Note is too long").optional(),
+  })
+  .refine(collarBainRefinement, { message: COLLAR_BAIN_ERROR, path: ["collarType"] });
 
 // Step 50 — one suit's (position 2+) explicit style. Same enum rules as
 // orderInputSchema's own style fields above; kept as a separate schema
 // rather than reused wholesale because this one has no date/money/note
 // fields at all — only the six style values a per-suit override can set.
-const itemStyleSchema = z.object({
-  suitType: z.enum(["SIMPLE", "GARAM_SILAI", "DESIGNING", "DOUBLE_STITCH", "BARABAR_SILAI"], {
-    errorMap: () => ({ message: "Select a Suit Type" }),
-  }),
-  collarType: z.enum(["POINT", "FRENCH", "TIE"], { errorMap: () => ({ message: "Select a Collar" }) }),
-  bainType: z.enum(["FULL_BAIN", "HALF_GOL_BAIN", "CUT_BAIN"], { errorMap: () => ({ message: "Select a Bain" }) }),
-  cuffType: z.enum(["NOK_DAR", "CUT", "GOL", "FOLD"], { errorMap: () => ({ message: "Select a Cuff" }) }),
-  gheraType: z.enum(["GOL", "SEEDHA"], { errorMap: () => ({ message: "Select a Ghera Style" }) }),
-  pocketOptionId: z.string().trim().optional(),
-});
+// Step 63 — collarType/bainType follow the exact same "exactly one"
+// combined-choice rule as the order-level schema above, so a per-suit
+// override can't reintroduce the old both-set shape either.
+const itemStyleSchema = z
+  .object({
+    suitType: z.enum(["SIMPLE", "GARAM_SILAI", "DESIGNING", "DOUBLE_STITCH", "BARABAR_SILAI"], {
+      errorMap: () => ({ message: "Select a Suit Type" }),
+    }),
+    collarType: z.enum(["POINT", "FRENCH", "TIE"]).optional(),
+    bainType: z.enum(["FULL_BAIN", "HALF_GOL_BAIN", "CUT_BAIN"]).optional(),
+    cuffType: z.enum(["NOK_DAR", "CUT", "GOL", "FOLD"], { errorMap: () => ({ message: "Select a Cuff" }) }),
+    gheraType: z.enum(["GOL", "SEEDHA"], { errorMap: () => ({ message: "Select a Ghera Style" }) }),
+    pocketOptionId: z.string().trim().optional(),
+  })
+  .refine(collarBainRefinement, { message: COLLAR_BAIN_ERROR, path: ["collarType"] });
 
 export async function generateOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
   const last = await tx.order.findFirst({
@@ -164,8 +183,12 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
     orderDate: formData.get("orderDate") || "",
     deliveryDate: formData.get("deliveryDate") || undefined,
     suitType: formData.get("suitType"),
-    collarType: formData.get("collarType"),
-    bainType: formData.get("bainType"),
+    // Step 63 — "" (TileGroup's hidden input is always present, even
+    // when nothing is selected) must become undefined before zod's
+    // .optional() sees it, same treatment pocketOptionId/pattiOptionId
+    // already get below.
+    collarType: formData.get("collarType") || undefined,
+    bainType: formData.get("bainType") || undefined,
     cuffType: formData.get("cuffType"),
     gheraType: formData.get("gheraType"),
     pocketOptionId: formData.get("pocketOptionId") || undefined,
@@ -281,8 +304,8 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
     }
     const parsedStyle = itemStyleSchema.safeParse({
       suitType: formData.get(`item.${position}.suitType`),
-      collarType: formData.get(`item.${position}.collarType`),
-      bainType: formData.get(`item.${position}.bainType`),
+      collarType: formData.get(`item.${position}.collarType`) || undefined,
+      bainType: formData.get(`item.${position}.bainType`) || undefined,
       cuffType: formData.get(`item.${position}.cuffType`),
       gheraType: formData.get(`item.${position}.gheraType`),
       pocketOptionId: formData.get(`item.${position}.pocketOptionId`) || undefined,
@@ -294,7 +317,7 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
     if (itemPocketError) {
       return { error: `Suit ${position}: ${itemPocketError}` };
     }
-    itemStyles.push(parsedStyle.data);
+    itemStyles.push({ ...parsedStyle.data, collarType: parsedStyle.data.collarType ?? null, bainType: parsedStyle.data.bainType ?? null });
   }
 
   // Never trust a client-supplied balance — always recalculated here.
@@ -306,8 +329,8 @@ export async function validateOrderInput(formData: FormData): Promise<{ error: s
       orderDate,
       deliveryDate,
       suitType: data.suitType,
-      collarType: data.collarType,
-      bainType: data.bainType,
+      collarType: data.collarType ?? null,
+      bainType: data.bainType ?? null,
       cuffType: data.cuffType,
       gheraType: data.gheraType,
       pocketOptionId: data.pocketOptionId,

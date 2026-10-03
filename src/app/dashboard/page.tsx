@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, formatDate, formatOrderNumber } from "@/lib/format";
 import { PageHeader } from "@/components/page-header";
 import { SearchHome } from "@/components/search/search-home";
 import { getTodayRange } from "@/lib/date-range";
@@ -26,7 +26,7 @@ export default async function DashboardPage() {
 
   const { start: todayStart, end: todayEnd } = getTodayRange();
 
-  const [dueTodayCount, overdueCount, outstandingResult] = await Promise.all([
+  const [dueTodayCount, overdueCount, outstandingResult, allOrdersRaw] = await Promise.all([
     // Due today: delivery date is today, not yet delivered.
     prisma.order.count({
       where: { deliveryDate: { gte: todayStart, lt: todayEnd }, status: { not: "DELIVERED" } },
@@ -36,15 +36,52 @@ export default async function DashboardPage() {
       where: { deliveryDate: { lt: todayStart }, status: { not: "DELIVERED" } },
     }),
     // Outstanding: total money still owed across every order with a
-    // remaining balance, regardless of status — a delivered order can
-    // still be unpaid.
+    // remaining balance. Step 63 — once an order is Delivered, its
+    // balance is excluded from this total (the order's own totalAmount/
+    // advanceAmount/balanceAmount rows are never touched — only this
+    // calculation's own where-clause changed).
     prisma.order.aggregate({
-      where: { balanceAmount: { gt: 0 } },
+      where: { balanceAmount: { gt: 0 }, status: { not: "DELIVERED" } },
       _sum: { balanceAmount: true },
+    }),
+    // All orders (every one, not just recent — the S1 "empty space below
+    // search" fill), sorted primarily by the CUSTOMER's own name (A→Z,
+    // case-insensitive) so every order belonging to the same customer
+    // naturally lands adjacent to each other under that customer's
+    // alphabetical position — a plain single-key sort already groups
+    // them, no separate grouping step needed. Most-recent-first is only
+    // the tiebreaker within one customer's own orders.
+    prisma.order.findMany({
+      orderBy: [{ customer: { name: "asc" } }, { createdAt: "desc" }],
+      select: {
+        id: true,
+        orderNumber: true,
+        customerId: true,
+        status: true,
+        deliveryDate: true,
+        balanceAmount: true,
+        customer: { select: { name: true } },
+      },
     }),
   ]);
 
   const outstandingTotal = outstandingResult._sum.balanceAmount ?? 0;
+
+  // Step 59 — formatted server-side into plain strings/booleans before
+  // crossing into the client SearchHome component: a Prisma Decimal
+  // (balanceAmount) isn't itself serializable as a Client Component prop
+  // the way a plain Date is, matching the same "format first, pass
+  // strings down" rule OrderEditData already follows (order-form.tsx).
+  const allOrders = allOrdersRaw.map((order) => ({
+    id: order.id,
+    orderNumberDisplay: formatOrderNumber(order.orderNumber),
+    customerId: order.customerId,
+    customerName: order.customer.name,
+    status: order.status,
+    deliveryDateDisplay: order.deliveryDate ? formatDate(order.deliveryDate) : "—",
+    hasBalance: Number(order.balanceAmount) > 0,
+    balanceDisplay: Number(order.balanceAmount) > 0 ? formatMoney(order.balanceAmount) : en.dashboard.noBalance,
+  }));
 
   return (
     <main className="flex min-h-screen flex-col">
@@ -54,7 +91,7 @@ export default async function DashboardPage() {
       <PageHeader title="Search" hideSearch />
 
       <div className="flex-1">
-        <SearchHome />
+        <SearchHome allOrders={allOrders} />
       </div>
 
       <div className="flex border-t border-rule bg-card">

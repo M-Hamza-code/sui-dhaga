@@ -91,7 +91,10 @@
     "measurementAgeTemplate": "measurements taken {age}",
     "dueToday": "Due today",
     "overdue": "Overdue",
-    "outstanding": "Outstanding"
+    "outstanding": "Outstanding",
+    "allOrders": "All Orders",
+    "allOrdersEmpty": "No orders yet.",
+    "allOrdersHint": "Sorted by customer name (A–Z)"
   },
   "profile": {
     "newOrder": "New order",

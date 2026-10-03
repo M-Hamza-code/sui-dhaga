@@ -15,8 +15,12 @@ import type { toMeasurementValueData } from "@/lib/measurement-value";
  */
 export interface ItemStyleOverride {
   suitType: SuitType;
-  collarType: CollarType;
-  bainType: BainType;
+  // Step 63 — exactly one of collarType/bainType is ever non-null, never
+  // both, never neither (enforced in order-actions.ts's
+  // validateOrderInput). Always assigned directly below (never omitted),
+  // which is what correctly clears the other one on an update.
+  collarType: CollarType | null;
+  bainType: BainType | null;
   cuffType: CuffType;
   gheraType: GheraType;
   pocketOptionId?: string;
@@ -26,8 +30,8 @@ export interface ValidatedOrderInput {
   orderDate: Date;
   deliveryDate: Date;
   suitType: SuitType;
-  collarType: CollarType;
-  bainType: BainType;
+  collarType: CollarType | null;
+  bainType: BainType | null;
   cuffType: CuffType;
   gheraType: GheraType;
   pocketOptionId?: string;

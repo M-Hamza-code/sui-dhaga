@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import type { CollarType, BainType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getOrderPrintData } from "@/lib/order-print-data";
 import { fromSnapshot } from "@/lib/measurement-prefill";
@@ -6,6 +7,24 @@ import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { OrderForm, type OrderEditData } from "@/components/orders/order-form";
 import { en } from "@/lib/locale";
+
+/**
+ * Step 63 — Collar and Bain are now a single combined choice (exactly
+ * one, never both). An order (or per-suit override) saved BEFORE this
+ * change may still have both columns set in the database — the
+ * migration is purely additive and never retroactively touched existing
+ * rows. Collar wins when opening such an order for edit; saving it again
+ * (even unchanged) naturally migrates it to the new single-choice shape,
+ * the same way stale-shape data elsewhere in this app heals itself on
+ * next write rather than needing a one-off backfill script.
+ */
+function normalizeCollarBain(
+  collarType: CollarType | null,
+  bainType: BainType | null
+): { collarType: CollarType | ""; bainType: BainType | "" } {
+  if (collarType) return { collarType, bainType: "" };
+  return { collarType: "", bainType: bainType ?? "" };
+}
 
 // Step 53 — Edit Order. Reuses getOrderPrintData() (order-print-data.ts)
 // completely unchanged — the exact same order + customer + pocketOption/
@@ -57,13 +76,15 @@ export default async function EditOrderPage({
     notFound();
   }
 
+  const orderCollarBain = normalizeCollarBain(order.collarType, order.bainType);
+
   const orderData: OrderEditData = {
     orderId: order.id,
     orderDateDisplay: order.orderDate.toISOString().slice(0, 10),
     deliveryDate: order.deliveryDate ? order.deliveryDate.toISOString().slice(0, 10) : "",
     suitType: order.suitType,
-    collarType: order.collarType,
-    bainType: order.bainType,
+    collarType: orderCollarBain.collarType,
+    bainType: orderCollarBain.bainType,
     cuffType: order.cuffType,
     gheraType: order.gheraType,
     pocketOptionId: order.pocketOptionId ?? "",
@@ -86,8 +107,7 @@ export default async function EditOrderPage({
       style: suit.isStyleOverride
         ? {
             suitType: suit.style.suitType,
-            collarType: suit.style.collarType,
-            bainType: suit.style.bainType,
+            ...normalizeCollarBain(suit.style.collarType, suit.style.bainType),
             cuffType: suit.style.cuffType,
             gheraType: suit.style.gheraType,
             pocketOptionId: suit.style.pocketOption?.id ?? "",
@@ -113,6 +133,28 @@ export default async function EditOrderPage({
         <OrderForm
           mode="edit"
           customerId={customer.id}
+          // Step 61 — root-cause fix. This page's own getOrderPrintData()
+          // call above already read `customer` live from Postgres THIS
+          // request, and notFound() already fired if it were missing or
+          // soft-deleted (see the two guards above) — so by this point
+          // the customer's existence is already a certainty, strictly
+          // stronger than anything OrderForm's own client-side mount
+          // effect could re-derive from Dexie. That effect (Phase 6,
+          // "confirms the customer exists SOMEWHERE") exists for the
+          // *new*-order pages, which have no such server-side guarantee
+          // of their own. Never passing this prop here left it at its
+          // `false` default, so a brand-new order's customer — real on
+          // the server, but not yet re-pulled into this device's local
+          // Dexie mirror since creation — was wrongly reported as "not
+          // found locally or on the server" the moment Edit was opened
+          // right after creating it. Older orders never showed this: by
+          // the time they were edited, some later page load had already
+          // re-synced Dexie, masking the same missing prop. Passing the
+          // already-proven `true` here removes the false negative
+          // entirely, the same way orders/new/page.tsx's own
+          // `customerExists={!!customer && !customer.deletedAt}` already
+          // does for its own (weaker, no-guarantee) case.
+          customerExists
           orderData={orderData}
           measurement={null}
           pocketOptions={pocketOptions}

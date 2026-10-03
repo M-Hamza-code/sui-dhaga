@@ -60,9 +60,9 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
     prisma.order.count({ where: { status: "READY" } }),
     // Step 47 — same where-clause as the Dashboard's own Outstanding
     // aggregate (src/app/overview/page.tsx), so this tab's contents
-    // always match what that stat card shows: balance > 0, no status
-    // filter.
-    prisma.order.count({ where: { balanceAmount: { gt: 0 } } }),
+    // always match what that stat card shows. Step 63 — both now also
+    // exclude Delivered orders.
+    prisma.order.count({ where: { balanceAmount: { gt: 0 }, status: { not: "DELIVERED" } } }),
     // Step 50 — same rationale as `newCount`.
     prisma.order.count({ where: { status: "DELIVERED" } }),
   ]);
@@ -90,7 +90,7 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
         : activeTab === "due-today"
           ? { deliveryDate: { gte: todayStart, lt: todayEnd }, status: { not: "DELIVERED" as const } }
           : activeTab === "outstanding"
-            ? { balanceAmount: { gt: 0 } }
+            ? { balanceAmount: { gt: 0 }, status: { not: "DELIVERED" as const } }
             : activeTab === "delivered"
               ? { status: "DELIVERED" as const }
               : { status: "READY" as const };

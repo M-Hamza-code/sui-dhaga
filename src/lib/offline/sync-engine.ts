@@ -468,11 +468,17 @@ export async function enqueueCreateOrder(customerId: string, formData: FormData)
     if (typeof value === "string") fields[key] = value;
   });
 
-  const REQUIRED = ["orderDate", "suitType", "collarType", "bainType", "cuffType", "gheraType", "totalAmount", "advanceAmount"];
+  // Step 63 — Collar/Bain removed from the blanket REQUIRED list: they're
+  // now a combined choice (exactly one, not both) rather than two
+  // independently-required fields — checked separately just below.
+  const REQUIRED = ["orderDate", "suitType", "cuffType", "gheraType", "totalAmount", "advanceAmount"];
   for (const key of REQUIRED) {
     if (!fields[key] || fields[key].trim() === "") {
       return { queued: false, reason: "invalid-input", message: `${key} is required` };
     }
+  }
+  if ((fields.collarType ? 1 : 0) + (fields.bainType ? 1 : 0) !== 1) {
+    return { queued: false, reason: "invalid-input", message: "Select either a Collar or a Bain (not both, and not neither)" };
   }
   if (!MONEY_REGEX.test(fields.totalAmount) || !MONEY_REGEX.test(fields.advanceAmount)) {
     return { queued: false, reason: "invalid-input", message: "Total and Advance Amount must be valid non-negative numbers" };
@@ -492,8 +498,8 @@ export async function enqueueCreateOrder(customerId: string, formData: FormData)
       orderDate: new Date(fields.orderDate).toISOString(),
       deliveryDate: fields.deliveryDate ? new Date(fields.deliveryDate).toISOString() : null,
       suitType: fields.suitType as SuitType,
-      collarType: fields.collarType as CollarType,
-      bainType: fields.bainType as BainType,
+      collarType: (fields.collarType || null) as CollarType | null,
+      bainType: (fields.bainType || null) as BainType | null,
       cuffType: fields.cuffType as CuffType,
       gheraType: fields.gheraType as GheraType,
       pocketOptionId: fields.pocketOptionId || null,
@@ -565,11 +571,15 @@ export async function enqueueUpdateOrder(customerId: string, orderId: string, fo
     if (typeof value === "string") fields[key] = value;
   });
 
-  const REQUIRED = ["orderDate", "suitType", "collarType", "bainType", "cuffType", "gheraType", "totalAmount", "advanceAmount"];
+  // Step 63 — same REQUIRED-list adjustment as enqueueCreateOrder above.
+  const REQUIRED = ["orderDate", "suitType", "cuffType", "gheraType", "totalAmount", "advanceAmount"];
   for (const key of REQUIRED) {
     if (!fields[key] || fields[key].trim() === "") {
       return { queued: false, reason: "invalid-input", message: `${key} is required` };
     }
+  }
+  if ((fields.collarType ? 1 : 0) + (fields.bainType ? 1 : 0) !== 1) {
+    return { queued: false, reason: "invalid-input", message: "Select either a Collar or a Bain (not both, and not neither)" };
   }
   if (!MONEY_REGEX.test(fields.totalAmount) || !MONEY_REGEX.test(fields.advanceAmount)) {
     return { queued: false, reason: "invalid-input", message: "Total and Advance Amount must be valid non-negative numbers" };
@@ -597,8 +607,8 @@ export async function enqueueUpdateOrder(customerId: string, orderId: string, fo
     await db.orders.update(orderId, {
       deliveryDate: fields.deliveryDate ? new Date(fields.deliveryDate).toISOString() : null,
       suitType: fields.suitType as SuitType,
-      collarType: fields.collarType as CollarType,
-      bainType: fields.bainType as BainType,
+      collarType: (fields.collarType || null) as CollarType | null,
+      bainType: (fields.bainType || null) as BainType | null,
       cuffType: fields.cuffType as CuffType,
       gheraType: fields.gheraType as GheraType,
       pocketOptionId: fields.pocketOptionId || null,
@@ -626,8 +636,8 @@ export async function enqueueUpdateOrder(customerId: string, orderId: string, fo
       const styleFields = hasStyleOverride
         ? {
             suitType: fields[`item.${position}.suitType`] as SuitType,
-            collarType: fields[`item.${position}.collarType`] as CollarType,
-            bainType: fields[`item.${position}.bainType`] as BainType,
+            collarType: (fields[`item.${position}.collarType`] || null) as CollarType | null,
+            bainType: (fields[`item.${position}.bainType`] || null) as BainType | null,
             cuffType: fields[`item.${position}.cuffType`] as CuffType,
             gheraType: fields[`item.${position}.gheraType`] as GheraType,
             pocketOptionId: fields[`item.${position}.pocketOptionId`] || null,

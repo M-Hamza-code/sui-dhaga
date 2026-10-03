@@ -11,11 +11,31 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import type { OrderStatus } from "@prisma/client";
 import { useCustomerSearch } from "./use-customer-search";
 import { formatRelativeTime } from "@/lib/format";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { DeleteOrderIconButton } from "@/components/orders/delete-order-icon-button";
 import { en } from "@/lib/locale";
 
-export function SearchHome() {
+// Step 59 — one row for the "All Orders" list filling the space below
+// the search bar when no search is active (see the final render branch
+// below). Pre-formatted server-side in dashboard/page.tsx before
+// crossing into this Client Component — see that file's own comment on
+// why (a Prisma Decimal isn't itself a valid Client Component prop the
+// way a plain string/boolean/Date is).
+export interface AllOrdersRow {
+  id: string;
+  orderNumberDisplay: string;
+  customerId: string;
+  customerName: string;
+  status: OrderStatus;
+  deliveryDateDisplay: string;
+  hasBalance: boolean;
+  balanceDisplay: string;
+}
+
+export function SearchHome({ allOrders }: { allOrders: AllOrdersRow[] }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const newCustomerRef = useRef<HTMLAnchorElement>(null);
@@ -190,7 +210,59 @@ export function SearchHome() {
             {en.search.newCustomerOnly}
           </Link>
         </div>
-      ) : null}
+      ) : (
+        // Step 59 — fills the space that used to render nothing at all
+        // once the page loads with no search typed yet. Existing search
+        // behavior above (isPending/searchFailed/results/noResults) is
+        // completely untouched — this branch only ever shows while none
+        // of those apply, and disappears the instant a query starts
+        // debouncing, exactly like "no results" already did in its place.
+        <div className="pt-4">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-ink">{en.search.allOrders}</h2>
+            <span className="text-xs text-graphite/50">{en.search.allOrdersHint}</span>
+          </div>
+          {allOrders.length === 0 ? (
+            <p className="mt-3 text-sm text-graphite/50">{en.search.allOrdersEmpty}</p>
+          ) : (
+            <ul className="mt-2 divide-y divide-rule/60">
+              {allOrders.map((order) => (
+                // Step 65 — the Link wraps only the navigable cells (order
+                // number through Status), not the whole row: a <button>
+                // (DeleteOrderIconButton) can't validly nest inside an <a>,
+                // the same reasoning order-board-table.tsx's own header
+                // comment documents for its per-cell Links. The delete
+                // icon sits as a sibling right after Status, same as the
+                // Order Board.
+                <li
+                  key={order.id}
+                  className="flex items-center gap-3 py-2.5 text-sm transition hover:bg-paper"
+                >
+                  <Link
+                    href={`/customers/${order.customerId}/orders/${order.id}`}
+                    className="flex min-w-0 flex-1 items-center gap-3"
+                  >
+                    <span className="w-12 flex-none tabular-nums font-semibold text-ink">{order.orderNumberDisplay}</span>
+                    <span className="min-w-0 flex-1 truncate text-graphite">{order.customerName}</span>
+                    <span className="flex-none tabular-nums text-graphite/60">{order.deliveryDateDisplay}</span>
+                    <span className={`w-24 flex-none text-right tabular-nums ${order.hasBalance ? "text-amber" : "text-graphite/40"}`}>
+                      {order.balanceDisplay}
+                    </span>
+                    <span className="flex-none">
+                      <StatusBadge status={order.status} />
+                    </span>
+                  </Link>
+                  <DeleteOrderIconButton
+                    customerId={order.customerId}
+                    orderId={order.id}
+                    orderNumberDisplay={order.orderNumberDisplay}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

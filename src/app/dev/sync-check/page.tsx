@@ -239,8 +239,10 @@ export default function SyncCheckPage() {
     const fd = new FormData();
     fd.set("orderDate", new Date().toISOString().slice(0, 10));
     fd.set("suitType", "SIMPLE");
+    // Step 63 — Collar and Bain are a single combined choice now (exactly
+    // one, not both); this dev diagnostic's test submission picks Collar,
+    // matching what a real submission looks like.
     fd.set("collarType", "POINT");
-    fd.set("bainType", "FULL_BAIN");
     fd.set("cuffType", "NOK_DAR");
     fd.set("gheraType", "GOL");
     fd.set("quantity", "1");
