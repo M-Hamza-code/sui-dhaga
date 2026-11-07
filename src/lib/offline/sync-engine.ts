@@ -19,6 +19,7 @@
 // with "not-found" against the server — visible and preserved (see
 // processSyncQueue below), never silently lost or corrupted.
 import { getOfflineDb, isOfflineDbAvailable } from "./db";
+import { runInitialSync } from "./initial-sync";
 import type {
   SyncQueueItem,
   SyncOp,
@@ -897,13 +898,23 @@ export async function processSyncQueue(): Promise<ProcessResult> {
         // Customer/order edit conflict (Phase 5 §H, extended to orders in
         // Step 53): the server refused to apply this update because the
         // record changed elsewhere since this edit was based on it.
-        // Never silently overwritten — the queue item is preserved as
-        // "failed" (not deleted, not silently retried forever) and the
-        // local row is flagged with the existing "conflict" syncStatus
-        // (Phase 2's SyncStatus type already reserves this value) so a
-        // future phase can build real conflict-resolution UI against it.
-        // No such UI is implemented in this phase.
-        await db.syncQueue.update(item.id, { status: "failed", attempts: item.attempts + 1, lastError: outcome.message });
+        // Never silently overwritten. The queue item is preserved (not
+        // deleted, not retried forever) and the local row keeps the
+        // "conflict" syncStatus.
+        //
+        // `conflictServerUpdatedAt` is what turns this from a dead end
+        // into something resolvable: it records the server's current
+        // updatedAt so resolveConflictKeepLocal() has a valid baseline
+        // to re-submit against, and it marks this item as a CONFLICT
+        // rather than a plain failure so retryFailedQueueItems() stops
+        // resending it on a loop that can never succeed. See
+        // resolveConflictKeepLocal / resolveConflictUseServer below.
+        await db.syncQueue.update(item.id, {
+          status: "failed",
+          attempts: item.attempts + 1,
+          lastError: outcome.message,
+          conflictServerUpdatedAt: outcome.serverUpdatedAt ?? "",
+        });
         if (item.op === "UPDATE_CUSTOMER") {
           const payload = item.payload as UpdateCustomerPayload;
           await db.customers.update(payload.customerId, { syncStatus: "conflict" }).catch(() => {});
@@ -998,22 +1009,219 @@ export interface RetryResult {
  * anything, matching this phase's explicit "no conflict-resolution
  * editor" scope.
  */
+// ── Conflict resolution ────────────────────────────────────────────────
+//
+// A conflict means the server refused an edit because the record changed
+// elsewhere after this edit was based on it. Until now the app could
+// DETECT that and say so, but offered no way out: the queue item sat at
+// "failed" forever, "Retry failed" resent it with the same stale baseline
+// so it failed identically every time, and the only real escape was
+// clearing browser storage — which throws the unsynced edit away. These
+// two functions are the way out, and they are the only two honest
+// options: the user's version wins, or the server's does.
+
+/**
+ * A conflicted queue item, as opposed to an ordinary failure. Both share
+ * `status: "failed"`; only a conflict carries conflictServerUpdatedAt
+ * (set, possibly to "" when the server didn't include one).
+ */
+function isConflictItem(item: SyncQueueItem): boolean {
+  return item.status === "failed" && item.conflictServerUpdatedAt !== undefined;
+}
+
+export interface ConflictEntry {
+  queueItemId: number;
+  op: SyncOp;
+  /** Which record this edit was for — used to look up a human name for it. */
+  recordId: string;
+  /** "customer" | "order" — which local table `recordId` belongs to. */
+  recordType: "customer" | "order";
+  /** The server's message from the 409, shown as-is. */
+  message: string;
+  /** True when the server gave us a baseline, i.e. "keep mine" can work. */
+  canKeepLocal: boolean;
+}
+
+/**
+ * Every unresolved conflict, for the resolution UI. Reads only the
+ * existing syncQueue table — no new table, no new index.
+ */
+export async function readConflicts(): Promise<ConflictEntry[]> {
+  if (!isOfflineDbAvailable()) return [];
+  const db = getOfflineDb();
+  await db.open();
+
+  const failed = await db.syncQueue.where("status").equals("failed").toArray();
+  const entries: ConflictEntry[] = [];
+
+  for (const item of failed) {
+    if (!isConflictItem(item) || item.id === undefined) continue;
+
+    // Only UPDATE_CUSTOMER and UPDATE_ORDER can conflict — they are the
+    // only two ops that send a baseUpdatedAt for the server to check.
+    if (item.op === "UPDATE_CUSTOMER") {
+      const payload = item.payload as UpdateCustomerPayload;
+      entries.push({
+        queueItemId: item.id,
+        op: item.op,
+        recordId: payload.customerId,
+        recordType: "customer",
+        message: item.lastError ?? "",
+        canKeepLocal: !!item.conflictServerUpdatedAt,
+      });
+    } else if (item.op === "UPDATE_ORDER") {
+      const payload = item.payload as UpdateOrderPayload;
+      entries.push({
+        queueItemId: item.id,
+        op: item.op,
+        recordId: payload.orderId,
+        recordType: "order",
+        message: item.lastError ?? "",
+        canKeepLocal: !!item.conflictServerUpdatedAt,
+      });
+    }
+  }
+
+  return entries;
+}
+
+export type ResolveResult = { ok: true } | { ok: false; message: string };
+
+/**
+ * Keep the local (user's) version: re-base this edit on the server's
+ * CURRENT updatedAt and send it again, so the server accepts it as a
+ * normal update instead of refusing it as stale.
+ *
+ * This is a deliberate overwrite of whatever changed on the server, which
+ * is exactly what the user asked for by choosing this — so the UI must
+ * name that clearly before calling it.
+ */
+export async function resolveConflictKeepLocal(queueItemId: number): Promise<ResolveResult> {
+  if (!isOfflineDbAvailable()) {
+    return { ok: false, message: "Local storage is not available in this browser." };
+  }
+  const db = getOfflineDb();
+  await db.open();
+
+  const item = await db.syncQueue.get(queueItemId);
+  if (!item || !isConflictItem(item)) {
+    return { ok: false, message: "That conflict is no longer waiting to be resolved." };
+  }
+  const serverUpdatedAt = item.conflictServerUpdatedAt;
+  if (!serverUpdatedAt) {
+    // The server reported a conflict without telling us its current
+    // version. Re-sending would just conflict again, so say so plainly
+    // rather than appear to act.
+    return {
+      ok: false,
+      message: "The server didn't report its current version, so this edit can't be re-applied. Use the server's version instead.",
+    };
+  }
+
+  // Rewrite the baseline in place. Everything else about the payload —
+  // the actual edited values — is untouched, so this re-sends the user's
+  // own edit, not a reconstruction of it.
+  const payload = { ...(item.payload as Record<string, unknown>), baseUpdatedAt: serverUpdatedAt };
+
+  await db.syncQueue.update(queueItemId, {
+    payload,
+    status: "pending",
+    attempts: 0,
+    lastError: null,
+    // No longer a conflict — clearing this returns the item to the
+    // ordinary pending/failed lifecycle.
+    conflictServerUpdatedAt: undefined,
+  });
+
+  // Back to "pending" on the record too, so the UI stops showing it as
+  // needing attention the moment the decision is made.
+  if (item.op === "UPDATE_CUSTOMER") {
+    const p = item.payload as UpdateCustomerPayload;
+    await db.customers.update(p.customerId, { syncStatus: "pending" }).catch(() => {});
+  } else if (item.op === "UPDATE_ORDER") {
+    const p = item.payload as UpdateOrderPayload;
+    await db.orders.update(p.orderId, { syncStatus: "pending" }).catch(() => {});
+  }
+
+  await processSyncQueue();
+  return { ok: true };
+}
+
+/**
+ * Take the server's version: discard this local edit entirely.
+ *
+ * The queue item is deleted and the local row is marked "synced" so the
+ * next initial sync is free to overwrite it with server values —
+ * initial-sync.ts deliberately refuses to overwrite a row that is
+ * "pending" or "conflict" (so it can never clobber a real unsent edit),
+ * which is why the flag has to be cleared here for the pull to take
+ * effect.
+ *
+ * Destructive to the local edit by design, which is the whole point of
+ * the choice — the UI must say so before calling it.
+ */
+export async function resolveConflictUseServer(queueItemId: number): Promise<ResolveResult> {
+  if (!isOfflineDbAvailable()) {
+    return { ok: false, message: "Local storage is not available in this browser." };
+  }
+  const db = getOfflineDb();
+  await db.open();
+
+  const item = await db.syncQueue.get(queueItemId);
+  if (!item || !isConflictItem(item)) {
+    return { ok: false, message: "That conflict is no longer waiting to be resolved." };
+  }
+
+  await db.syncQueue.delete(queueItemId);
+
+  if (item.op === "UPDATE_CUSTOMER") {
+    const p = item.payload as UpdateCustomerPayload;
+    await db.customers.update(p.customerId, { syncStatus: "synced" }).catch(() => {});
+  } else if (item.op === "UPDATE_ORDER") {
+    const p = item.payload as UpdateOrderPayload;
+    await db.orders.update(p.orderId, { syncStatus: "synced" }).catch(() => {});
+  }
+
+  // Pull the server's actual values down now, rather than leaving the
+  // local row showing the discarded edit until the next app load. Safe
+  // to call at any time — its own header documents that it is re-called
+  // on every app load, and with the flag cleared above it will now
+  // overwrite this row instead of skipping it. Best-effort: if it fails
+  // (offline), the row is already marked "synced" so the next load's
+  // own initial sync picks it up.
+  await runInitialSync().catch(() => {});
+
+  return { ok: true };
+}
+
 export async function retryFailedQueueItems(): Promise<RetryResult> {
   if (!isOfflineDbAvailable()) return { retriedCount: 0 };
   const db = getOfflineDb();
   const failed = await db.syncQueue.where("status").equals("failed").toArray();
-  for (const item of failed) {
+  // Conflicts live at `status: "failed"` too, but they are NOT retryable:
+  // resending one unchanged means resending the same stale baseUpdatedAt,
+  // which the server refuses for exactly the same reason it refused the
+  // first time. Retrying them produced an endless loop that looked like
+  // the app trying and never reporting why. They are excluded here and
+  // resolved explicitly instead (resolveConflictKeepLocal /
+  // resolveConflictUseServer).
+  const retryable = failed.filter((item) => !isConflictItem(item));
+  for (const item of retryable) {
     if (item.id !== undefined) {
       await db.syncQueue.update(item.id, { status: "pending", attempts: 0 });
     }
   }
-  return { retriedCount: failed.length };
+  return { retriedCount: retryable.length };
 }
 
 type SendOutcome =
   | { kind: "success"; data?: unknown }
   | { kind: "auth-required" }
-  | { kind: "conflict"; message: string }
+  // serverUpdatedAt is the record's CURRENT server updatedAt, returned
+  // in the 409 body. It was previously thrown away, which is precisely
+  // what made a conflict unresolvable: without it there is no correct
+  // baseline to re-submit an overwrite against.
+  | { kind: "conflict"; message: string; serverUpdatedAt?: string }
   | { kind: "rejected"; message: string }
   | { kind: "retryable"; message: string };
 
@@ -1113,7 +1321,11 @@ async function sendQueueItem(item: SyncQueueItem): Promise<SendOutcome> {
   }
   if (response.status === 409) {
     const body = await response.json().catch(() => null);
-    return { kind: "conflict", message: (body && body.error) || "Conflict: this record was changed elsewhere" };
+    return {
+      kind: "conflict",
+      message: (body && body.error) || "Conflict: this record was changed elsewhere",
+      serverUpdatedAt: typeof body?.serverUpdatedAt === "string" ? body.serverUpdatedAt : undefined,
+    };
   }
   if (response.ok) {
     const data = await response.json().catch(() => undefined);

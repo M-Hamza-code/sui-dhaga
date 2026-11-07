@@ -3,6 +3,12 @@ import { getOrderPrintData } from "@/lib/order-print-data";
 import { PrintPreviewShell } from "@/components/print/print-preview-shell";
 import { formatDate, formatMoney, formatOrderNumber } from "@/lib/format";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Receipt · Sui Dhaga".
+export const metadata: Metadata = { title: "Receipt" };
 
 // Customer Receipt print preview (Step 16 Part D). Deliberately compact —
 // this is what the customer walks out holding, not an internal record:

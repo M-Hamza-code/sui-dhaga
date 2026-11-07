@@ -220,6 +220,26 @@ export interface SyncQueueItem {
    * no processor reads or writes it yet in this phase.
    */
   localRefs?: { field: string; refType: "customer" | "order" }[];
+  /**
+   * Set ONLY when this item failed with a 409 conflict: the server's
+   * current `updatedAt` for the record, taken straight from the conflict
+   * response body (customer-sync.ts / order-update.ts both return it as
+   * `serverUpdatedAt`).
+   *
+   * Two jobs:
+   *   1. It is what makes a conflicted item distinguishable from an
+   *      ordinary failure. Both sit at `status: "failed"`, so without
+   *      this flag retryFailedQueueItems() could not tell them apart and
+   *      would resend a conflict forever with the same stale baseline.
+   *   2. Resolving "keep my version" needs exactly this value as the new
+   *      baseUpdatedAt — that is what lets the server accept the edit
+   *      instead of refusing it again.
+   *
+   * Not an indexed Dexie field, so adding it needs no schema version
+   * bump: IndexedDB is schemaless per record and db.ts's store strings
+   * only declare indexes.
+   */
+  conflictServerUpdatedAt?: string;
 }
 
 // ── Sync bookkeeping (no server equivalent) ────────────────────────────

@@ -25,7 +25,9 @@ import { SlidersHorizontal } from "lucide-react";
 import { logout } from "@/lib/auth-actions";
 import { en } from "@/lib/locale";
 
-export function SettingsMenu({ email }: { email: string | null }) {
+/** `onDark` restyles the trigger for the indigo navigation rail; the
+ *  dropdown panel itself is light in both cases and is unchanged. */
+export function SettingsMenu({ email, onDark = false }: { email: string | null; onDark?: boolean }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -55,7 +57,7 @@ export function SettingsMenu({ email }: { email: string | null }) {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={en.nav.settings}
-        className="flex h-9 w-9 flex-none items-center justify-center rounded-sm border border-rule text-graphite transition hover:bg-paper hover:text-indigo focus:outline-none focus:ring-2 focus:ring-indigo focus:ring-offset-2"
+        className={`flex h-9 w-9 flex-none items-center justify-center rounded-sm border transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${onDark ? "border-white/25 text-white/85 hover:bg-white/10 hover:text-white focus:ring-white/70 focus:ring-offset-indigo" : "border-rule text-graphite hover:bg-paper hover:text-indigo focus:ring-indigo"}`}
       >
         <SlidersHorizontal className="h-5 w-5" aria-hidden="true" />
       </button>
@@ -64,7 +66,7 @@ export function SettingsMenu({ email }: { email: string | null }) {
         <div
           role="menu"
           aria-label={en.nav.settings}
-          className="absolute right-0 top-full z-20 mt-2 w-56 rounded-sm border border-rule bg-card p-1.5 shadow-sm"
+          className={`absolute right-0 z-20 w-56 rounded-sm border border-rule bg-card p-1.5 shadow-sm ${onDark ? "bottom-full mb-2 lg:left-0 lg:right-auto" : "top-full mt-2"}`}
         >
           <MenuLink href="/settings?view=profile" onSelect={() => setOpen(false)}>
             {en.settingsMenu.profile}

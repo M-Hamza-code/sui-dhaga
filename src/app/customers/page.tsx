@@ -5,6 +5,12 @@ import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { EmptyState } from "@/components/ui/empty-state";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Customer List · Sui Dhaga".
+export const metadata: Metadata = { title: "Customer List" };
 
 // Legacy internal customer list (Step 3), kept alongside the real S1
 // search screen (Step 11) rather than removed — Step 20 restyled it onto
@@ -40,7 +46,7 @@ export default async function CustomersPage() {
 
       <PageContainer size="lg">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-graphite">{en.customersList.heading}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-graphite">{en.customersList.heading}</h1>
           <Link
             href="/customers/new"
             className="rounded-sm bg-indigo px-4 py-2 text-sm text-white transition hover:bg-indigo-hover"
@@ -65,18 +71,56 @@ export default async function CustomersPage() {
                 </tr>
               </thead>
               <tbody>
-                {customers.map((customer) => (
-                  <tr key={customer.id} className="border-b border-rule/60 transition last:border-b-0 hover:bg-indigo/5">
-                    <td className="px-4 py-3">
-                      <Link href={`/customers/${customer.id}`} className="font-medium text-indigo hover:underline">
-                        {customer.customerCode}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3 font-medium text-graphite">{customer.name}</td>
-                    <td className="px-4 py-3 tabular-nums text-graphite">{customer.phonePrimary}</td>
-                    <td className="px-4 py-3 tabular-nums text-graphite/70">{formatDate(customer.createdAt)}</td>
-                  </tr>
-                ))}
+                {customers.map((customer) => {
+                  const href = `/customers/${customer.id}`;
+                  return (
+                    // The row already had the indigo-tinted hover every
+                    // other table in the app uses to say "this row is
+                    // clickable", but only the Customer ID cell actually
+                    // navigated — clicking the name or the phone number,
+                    // which is what you'd reach for, did nothing. Each
+                    // cell is now its own <Link> to the same profile, the
+                    // identical per-cell pattern order-board-table.tsx
+                    // and the Customer Profile's own order history
+                    // already use, with only the first cell in the tab
+                    // order (see those files for the full reasoning).
+                    // Same destination, same query, same four columns.
+                    <tr key={customer.id} className="border-b border-rule/60 transition last:border-b-0 hover:bg-indigo/5">
+                      <td className="p-0">
+                        <Link href={href} className="block px-4 py-3 font-medium text-indigo hover:underline">
+                          {customer.customerCode}
+                        </Link>
+                      </td>
+                      <td className="p-0">
+                        <Link
+                          href={href}
+                          tabIndex={-1}
+                          className="block px-4 py-3 font-medium text-graphite"
+                        >
+                          {customer.name}
+                        </Link>
+                      </td>
+                      <td className="p-0">
+                        <Link
+                          href={href}
+                          tabIndex={-1}
+                          className="block px-4 py-3 tabular-nums text-graphite"
+                        >
+                          {customer.phonePrimary}
+                        </Link>
+                      </td>
+                      <td className="p-0">
+                        <Link
+                          href={href}
+                          tabIndex={-1}
+                          className="block px-4 py-3 tabular-nums text-graphite/70"
+                        >
+                          {formatDate(customer.createdAt)}
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

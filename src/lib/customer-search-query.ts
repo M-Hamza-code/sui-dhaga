@@ -11,11 +11,19 @@
 // the actual matching/query logic.
 import { prisma } from "@/lib/prisma";
 import { normalizePhoneDigits as normalizePhone } from "@/lib/phone";
-import { nameKey, similarity, isPhoneQuery, RESULT_LIMIT, SIMILARITY_THRESHOLD } from "@/lib/customer-search-matching";
+import { nameKey, similarity, isPhoneQuery, matchesCustomerCode, RESULT_LIMIT, SIMILARITY_THRESHOLD } from "@/lib/customer-search-matching";
 
 export interface CustomerSearchResult {
   id: string;
   name: string;
+  /**
+   * The shop-facing customer number ("SD-000123"), now returned so the
+   * search results can show it. Null for a customer created offline
+   * whose code the server hasn't assigned yet (the same null this field
+   * already carries in the local Dexie mirror) — callers must render
+   * that case as "no code yet", never as a made-up number.
+   */
+  customerCode: string | null;
   phonePrimary: string;
   orderCount: number;
   lastOrderAt: Date | null;
@@ -37,37 +45,56 @@ export async function queryCustomers(rawQuery: string): Promise<CustomerSearchRe
     return [];
   }
 
-  let matchedIds: string[];
+  // One candidate read covering every branch below. This replaces the
+  // two previous branch-local findMany calls (one selecting phone
+  // fields, one selecting name) — same table, same `deletedAt: null`
+  // filter, same "score the whole active set in memory" approach this
+  // file has always used, just fetched once now that Customer Code
+  // matching needs a third field alongside whichever branch runs.
+  const candidates = await prisma.customer.findMany({
+    where: { deletedAt: null },
+    select: { id: true, name: true, customerCode: true, phonePrimary: true, phoneSecondary: true },
+  });
+
+  // Exact Customer Code match. The offline local search
+  // (customer-search-local.ts) has supported this since Phase 11 while
+  // this online path never did, so the SAME query returned different
+  // results depending on whether the server was reachable — searching
+  // "SD-000123" or "123" found the customer offline and found nothing
+  // online. This uses the shared matchesCustomerCode() helper that path
+  // already uses, so the two now agree by construction rather than by
+  // two copies of the same rule.
+  const codeMatchIds = candidates.filter((c) => matchesCustomerCode(c.customerCode, query)).map((c) => c.id);
+
+  let primaryMatchIds: string[];
 
   if (isPhoneQuery(query)) {
     const digits = normalizePhone(query);
-    if (!digits) return [];
-
-    const candidates = await prisma.customer.findMany({
-      where: { deletedAt: null },
-      select: { id: true, phonePrimary: true, phoneSecondary: true },
-    });
-    matchedIds = candidates
-      .filter(
-        (c) =>
-          normalizePhone(c.phonePrimary).includes(digits) ||
-          (c.phoneSecondary ? normalizePhone(c.phoneSecondary).includes(digits) : false)
-      )
-      .map((c) => c.id);
+    primaryMatchIds = digits
+      ? candidates
+          .filter(
+            (c) =>
+              normalizePhone(c.phonePrimary).includes(digits) ||
+              (c.phoneSecondary ? normalizePhone(c.phoneSecondary).includes(digits) : false)
+          )
+          .map((c) => c.id)
+      : [];
   } else {
     const key = nameKey(query);
-    if (!key) return [];
-
-    const candidates = await prisma.customer.findMany({
-      where: { deletedAt: null },
-      select: { id: true, name: true },
-    });
-    matchedIds = candidates
-      .map((c) => ({ id: c.id, score: similarity(key, nameKey(c.name)) }))
-      .filter((c) => c.score >= SIMILARITY_THRESHOLD)
-      .sort((a, b) => b.score - a.score)
-      .map((c) => c.id);
+    primaryMatchIds = key
+      ? candidates
+          .map((c) => ({ id: c.id, score: similarity(key, nameKey(c.name)) }))
+          .filter((c) => c.score >= SIMILARITY_THRESHOLD)
+          .sort((a, b) => b.score - a.score)
+          .map((c) => c.id)
+      : [];
   }
+
+  // Union, code matches first — a direct code hit is the highest-
+  // confidence signal. Identical to the local path's own union. The
+  // final sort below still reorders everything by most-recent-order-date
+  // regardless, so this order only ever acts as a tiebreaker.
+  const matchedIds = Array.from(new Set([...codeMatchIds, ...primaryMatchIds]));
 
   if (matchedIds.length === 0) {
     return [];
@@ -79,6 +106,7 @@ export async function queryCustomers(rawQuery: string): Promise<CustomerSearchRe
     select: {
       id: true,
       name: true,
+      customerCode: true,
       phonePrimary: true,
       orders: { select: { orderDate: true }, orderBy: { orderDate: "desc" }, take: 1 },
       _count: { select: { orders: true } },
@@ -93,6 +121,7 @@ export async function queryCustomers(rawQuery: string): Promise<CustomerSearchRe
     .map((c) => ({
       id: c.id,
       name: c.name,
+      customerCode: c.customerCode,
       phonePrimary: c.phonePrimary,
       orderCount: c._count.orders,
       lastOrderAt: c.orders[0]?.orderDate ?? null,

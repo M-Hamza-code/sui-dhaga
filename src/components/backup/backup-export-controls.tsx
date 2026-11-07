@@ -24,7 +24,19 @@ import { recordBackupSuccess, getLastBackupTime } from "@/lib/backup-status";
 import { formatDateTime } from "@/lib/format";
 import { en } from "@/lib/locale";
 
-export function BackupExportControls({ showLastBackupTime = false }: { showLastBackupTime?: boolean }) {
+/**
+ * `onDark` restyles the two trigger buttons for the indigo navigation
+ * rail (AppShell). Everything else — the dropdown panel, the backup
+ * status line, every handler — is unchanged, and the default (light)
+ * rendering is exactly what Settings > General still shows.
+ */
+export function BackupExportControls({
+  showLastBackupTime = false,
+  onDark = false,
+}: {
+  showLastBackupTime?: boolean;
+  onDark?: boolean;
+}) {
   const [isPending, startTransition] = useTransition();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -93,7 +105,7 @@ export function BackupExportControls({ showLastBackupTime = false }: { showLastB
           type="button"
           onClick={handleBackup}
           disabled={isPending}
-          className="whitespace-nowrap rounded-sm border border-rule px-3 py-1.5 text-sm text-graphite transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+          className={`whitespace-nowrap rounded-sm border px-3 py-1.5 text-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${onDark ? "border-white/25 text-white/85 hover:bg-white/10 hover:text-white" : "border-rule text-graphite hover:bg-paper"}`}
         >
           {isPending ? en.backup.working : en.backup.backupButton}
         </button>
@@ -104,12 +116,12 @@ export function BackupExportControls({ showLastBackupTime = false }: { showLastB
             onClick={() => setMenuOpen((open) => !open)}
             disabled={isPending}
             aria-expanded={menuOpen}
-            className="whitespace-nowrap rounded-sm border border-rule px-3 py-1.5 text-sm text-graphite transition hover:bg-paper disabled:cursor-not-allowed disabled:opacity-50"
+            className={`whitespace-nowrap rounded-sm border px-3 py-1.5 text-sm transition disabled:cursor-not-allowed disabled:opacity-50 ${onDark ? "border-white/25 text-white/85 hover:bg-white/10 hover:text-white" : "border-rule text-graphite hover:bg-paper"}`}
           >
             {en.backup.exportButton}
           </button>
           {menuOpen && (
-            <div className="absolute right-0 top-full z-10 mt-1 w-56 rounded-sm border border-rule bg-card py-1">
+            <div className={`absolute right-0 z-10 w-56 rounded-sm border border-rule bg-card py-1 shadow-sm ${onDark ? "bottom-full mb-1 lg:left-0 lg:right-auto" : "top-full mt-1"}`}>
               <button
                 type="button"
                 onClick={handleExportCustomers}

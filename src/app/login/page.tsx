@@ -1,5 +1,11 @@
 import { login } from "@/lib/auth-actions";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Sign in · Sui Dhaga".
+export const metadata: Metadata = { title: "Sign in" };
 
 // Phase 1 has exactly one admin account and no public registration —
 // there is deliberately no link to a signup page here. Deliberately no
@@ -17,9 +23,21 @@ import { en } from "@/lib/locale";
 export default function LoginPage({
   searchParams,
 }: {
-  searchParams: { error?: string };
+  searchParams: { error?: string; retryAfter?: string };
 }) {
   const hasError = searchParams?.error === "1";
+
+  // Failed-login throttling (login-throttle.ts). `error=locked` means the
+  // attempt was refused without the password even being checked, so this
+  // is shown instead of "Invalid email or password" — which would be both
+  // wrong and actively misleading here, since the password may well be
+  // correct.
+  const isLocked = searchParams?.error === "locked";
+  const retryAfterMinutes = Math.max(1, Number(searchParams?.retryAfter) || 1);
+  const lockedMessage =
+    retryAfterMinutes === 1
+      ? en.auth.lockedOutOneMinute
+      : en.auth.lockedOutTemplate.replace("{minutes}", String(retryAfterMinutes));
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-paper p-8">
@@ -64,15 +82,20 @@ export default function LoginPage({
             />
           </div>
 
-          {hasError && (
+          {isLocked ? (
+            <p role="alert" className="rounded-sm border border-amber bg-amber/10 px-3 py-2 text-sm text-graphite">
+              {lockedMessage}
+            </p>
+          ) : hasError ? (
             <p role="alert" className="rounded-sm border border-amber bg-amber/10 px-3 py-2 text-sm text-graphite">
               {en.auth.invalidCredentials}
             </p>
-          )}
+          ) : null}
 
           <button
             type="submit"
-            className="w-full rounded-sm bg-indigo px-4 py-2.5 text-white transition hover:bg-indigo-hover focus:outline-none focus:ring-2 focus:ring-indigo focus:ring-offset-2"
+            disabled={isLocked}
+            className="w-full rounded-sm bg-indigo px-4 py-2.5 text-white transition hover:bg-indigo-hover focus:outline-none focus:ring-2 focus:ring-indigo focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {en.auth.loginButton}
           </button>

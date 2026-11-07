@@ -28,6 +28,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PhoneInput } from "@/components/ui/phone-input";
+import { DuplicatePhoneNotice } from "@/components/customers/duplicate-phone-notice";
 import { enqueueCreateCustomer, processSyncQueue } from "@/lib/offline/sync-engine";
 import { navigateAfterLocalSave } from "@/lib/offline/navigate";
 import { en } from "@/lib/locale";
@@ -93,6 +94,10 @@ export function NewCustomerForm() {
           onChange={(e) => setValues((v) => ({ ...v, phonePrimary: e.target.value }))}
           className={INPUT_CLASS}
         />
+        {/* Warns if this number already belongs to a customer. Never
+            blocks the save — see that component's own comment for why a
+            shared phone is legitimate. */}
+        <DuplicatePhoneNotice phone={values.phonePrimary} />
       </div>
 
       <div>

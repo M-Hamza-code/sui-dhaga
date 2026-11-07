@@ -1,9 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Sans, Noto_Naskh_Arabic, Noto_Nastaliq_Urdu } from "next/font/google";
+import { AppShell } from "@/components/app-shell";
 import { GlobalShortcuts } from "@/components/global-shortcuts";
+import { en } from "@/lib/locale";
 import { InitialSyncBootstrap } from "@/components/offline/initial-sync-bootstrap";
 import { SyncQueueBootstrap } from "@/components/offline/sync-queue-bootstrap";
 import { ServiceWorkerRegistration } from "@/components/offline/service-worker-registration";
+import { getSession } from "@/lib/auth";
 import "./globals.css";
 
 // Step 10 — design-system typography foundation. All three are self-hosted
@@ -33,7 +36,18 @@ const notoNastaliqUrdu = Noto_Nastaliq_Urdu({
 });
 
 export const metadata: Metadata = {
-  title: "Sui Dhaga — Management System",
+  // A title TEMPLATE rather than one fixed string: every page now exports
+  // its own short `title` (see each page.tsx) and lands here as
+  // "<page> · Sui Dhaga". Before this, all ~20 screens shared the single
+  // title below, so browser tabs, history entries, and — most visibly —
+  // the browser's own printed page header on the Receipt/Work Order
+  // routes all read the same generic text. `default` keeps that exact
+  // original string for any page that exports no title of its own
+  // (e.g. "/" itself, which only redirects), so nothing regresses.
+  title: {
+    default: "Sui Dhaga — Management System",
+    template: "%s · Sui Dhaga",
+  },
   description: "Internal customer, measurement, and order management for Sui Dhaga.",
   // Phase 8 (Part A) — manifest.ts's own file-convention wiring already
   // injects <link rel="manifest">; these two fields round out "required
@@ -50,16 +64,40 @@ export const viewport: Viewport = {
   themeColor: "#1F3A63",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // Read once here instead of once per page. getSession() is the same
+  // cheap signed-cookie read every page already performs for its own
+  // auth guard; this adds no database work.
+  const session = await getSession();
   return (
     <html lang="en" dir="ltr">
       <body
         className={`${ibmPlexSans.variable} ${notoNaskhArabic.variable} ${notoNastaliqUrdu.variable} bg-paper font-sans text-graphite antialiased`}
       >
+        {/* Keyboard-only escape hatch past the header. Every
+            authenticated screen renders PageHeader first (brand mark,
+            back link, three nav items, backup/export, the sync pill,
+            the settings menu), so reaching a page's actual content by
+            Tab meant going through all of it on every single
+            navigation. Invisible until focused — `sr-only` with a
+            `focus:` override is the standard pattern, and it adds
+            nothing to the visual design. Targets the <main> element
+            wrapper below, which every page's own <main> then renders
+            inside — one id in one file, rather than adding the same id
+            to ~20 page components. tabIndex={-1} on that wrapper is
+            what makes the jump move keyboard FOCUS and not just the
+            scroll position (a plain <div> isn't focusable on its own,
+            so Tab would otherwise resume from the header again). */}
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-sm focus:bg-indigo focus:px-4 focus:py-2 focus:text-sm focus:text-white"
+        >
+          {en.app.skipToContent}
+        </a>
         {/* Step 21 — single global keyboard-shortcut listener, mounted
             once for the whole app. Renders nothing itself. */}
         <GlobalShortcuts />
@@ -80,7 +118,18 @@ export default function RootLayout({
             mount pattern as the three components above; renders
             nothing itself. */}
         <ServiceWorkerRegistration />
-        {children}
+        {/* AppShell supplies the persistent navigation rail for every
+            authenticated screen (and renders nothing but its children on
+            /login and /offline). It's mounted here, once, rather than in
+            each page, so no page component had to change. The session
+            email is read in this Server Component and passed down — the
+            same single value PageHeader used to read for SettingsMenu;
+            never a password or token. */}
+        <AppShell email={session?.email ?? null}>
+          <div id="main-content" tabIndex={-1}>
+            {children}
+          </div>
+        </AppShell>
       </body>
     </html>
   );

@@ -25,6 +25,11 @@ import type { Measurement } from "@prisma/client";
 import { getOfflineDb, isOfflineDbAvailable } from "@/lib/offline/db";
 import { enqueueSaveMeasurement, processSyncQueue } from "@/lib/offline/sync-engine";
 import { navigateAfterLocalSave } from "@/lib/offline/navigate";
+import {
+  loadMeasurementDraft,
+  saveMeasurementDraft,
+  clearMeasurementDraft,
+} from "@/lib/measurement-draft-storage";
 import { toFractionDisplay, fractionDisplayToDecimal } from "@/lib/fractions";
 import { KAMEEZ_FIELDS, SHALWAR_DECIMAL_FIELDS, SHALWAR_POCKET_FIELD } from "@/lib/measurement-fields";
 import { en } from "@/lib/locale";
@@ -92,6 +97,14 @@ export function MeasurementForm({
   const [localError, setLocalError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [notFoundEverywhere, setNotFoundEverywhere] = useState(false);
+  // True once an unsaved draft has been restored into the form, so the
+  // user is told rather than silently shown values they don't recognise
+  // as "saved".
+  const [restoredDraft, setRestoredDraft] = useState(false);
+  // Gates autosave. Without it, mounting the form would immediately
+  // persist the untouched prefill as a "draft", and every later visit
+  // would claim to have restored unsaved work that never existed.
+  const touched = useRef(false);
 
   // Phase 6 — "local storage is the source of truth" (same principle
   // Phase 5's EditCustomerForm/CustomerIdentityCard already apply): a
@@ -128,6 +141,14 @@ export function MeasurementForm({
           setValues(fresh);
           setNoteValue(localMeasurement.note ?? "");
         }
+
+        // LAST, so it wins over both the server prefill and the local
+        // Dexie row above: an unsaved draft is by definition the most
+        // recent thing the user typed. Deliberately does NOT move
+        // `original.current` — that stays the last SAVED baseline, so
+        // restored-but-unsaved fields keep showing the amber "changed"
+        // treatment and the change count stays truthful.
+        applyDraft();
       } catch {
         // Best-effort only — if Dexie can't be read for any reason, the
         // server-provided values (if any) are still shown as-is.
@@ -139,6 +160,51 @@ export function MeasurementForm({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerId]);
+
+  // Restore an autosaved draft, if this customer has one. Called at the
+  // end of the mount effect above (and nowhere else) so it always lands
+  // after the server/Dexie prefill rather than racing it.
+  function applyDraft() {
+    const draft = loadMeasurementDraft(customerId);
+    if (!draft) return;
+    touched.current = true;
+    setValues((prev) => ({ ...prev, ...draft.values }));
+    setNoteValue(draft.note);
+    setRestoredDraft(true);
+  }
+
+  // Throw the draft away and go back to whatever is actually saved.
+  function discardDraft() {
+    clearMeasurementDraft(customerId);
+    touched.current = false;
+    setValues(original.current);
+    setNoteValue(measurement?.note ?? "");
+    setRestoredDraft(false);
+  }
+
+  // Autosave, debounced the same 1500ms the order form uses. Only ever
+  // writes once the user has actually edited something (`touched`) —
+  // otherwise opening the form would persist the untouched prefill and
+  // every later visit would claim to restore work that was never done.
+  // When the form is edited back to matching the saved values there is
+  // nothing worth keeping, so the draft is removed instead of stored.
+  useEffect(() => {
+    if (!touched.current) return;
+
+    const dirty =
+      noteValue !== (measurement?.note ?? "") ||
+      SEQUENCE.some((key) => (values[key] ?? "") !== (original.current[key] ?? ""));
+
+    const timer = setTimeout(() => {
+      if (dirty) {
+        saveMeasurementDraft(customerId, { values, note: noteValue });
+      } else {
+        clearMeasurementDraft(customerId);
+      }
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [values, noteValue, customerId, measurement?.note]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -171,6 +237,11 @@ export function MeasurementForm({
       return;
     }
 
+    // The values now live in Dexie + the sync queue, so the localStorage
+    // draft has nothing left to protect — dropped here (not on navigate)
+    // so a draft can never outlive the save it was covering for.
+    clearMeasurementDraft(customerId);
+
     // Fire-and-forget, same as new-customer-form.tsx (Phase 5) — the
     // measurement already has a durable local home regardless of
     // whether this succeeds immediately, later, or not at all right now.
@@ -184,6 +255,7 @@ export function MeasurementForm({
   }, []);
 
   function setFieldValue(key: string, raw: string) {
+    touched.current = true;
     // Live fraction normalization: the instant a typed value ends in
     // .5/.25/.75, it becomes ½/¼/¾ — matches the brief's "typing .5 also
     // gives ½".
@@ -203,6 +275,7 @@ export function MeasurementForm({
 
   function applyFraction(glyph: string) {
     if (activeField === SHALWAR_POCKET_FIELD.key) return;
+    touched.current = true;
     setValues((prev) => {
       const current = prev[activeField] ?? "";
       const withoutFraction = current.replace(/[½¼¾]/g, "");
@@ -239,7 +312,30 @@ export function MeasurementForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]">
+    <>
+      {/* Shown only when an autosaved draft was actually restored into
+          the form (measurement-draft-storage.ts). Without this the user
+          would see values that differ from what's saved with no
+          explanation — worse than losing them, because they might trust
+          them as saved. Amber is the app's existing "needs attention"
+          tone, the same one the changed-field highlighting uses. */}
+      {restoredDraft && (
+        <div
+          role="status"
+          className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-sm border border-amber bg-amber/10 px-4 py-2.5"
+        >
+          <p className="text-sm text-graphite">{en.measurementForm.draftRestored}</p>
+          <button
+            type="button"
+            onClick={discardDraft}
+            className="rounded-sm border border-amber px-3 py-1.5 text-sm text-graphite transition hover:bg-amber/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
+          >
+            {en.measurementForm.draftDiscard}
+          </button>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]">
       <div className="rounded-sm border border-rule bg-card p-5 shadow-sm">
         <MeasurementFieldGroup
           title="Kameez"
@@ -268,7 +364,10 @@ export function MeasurementForm({
               value={values[SHALWAR_POCKET_FIELD.key] ?? ""}
               isChanged={isChanged(SHALWAR_POCKET_FIELD.key)}
               onFocus={() => setActiveField(SHALWAR_POCKET_FIELD.key)}
-              onChange={(v) => setValues((prev) => ({ ...prev, [SHALWAR_POCKET_FIELD.key]: v }))}
+              onChange={(v) => {
+                touched.current = true;
+                setValues((prev) => ({ ...prev, [SHALWAR_POCKET_FIELD.key]: v }));
+              }}
             />
             <MeasurementFieldGroup
               title={null}
@@ -309,7 +408,10 @@ export function MeasurementForm({
             name="note"
             rows={2}
             value={noteValue}
-            onChange={(event) => setNoteValue(event.target.value)}
+            onChange={(event) => {
+              touched.current = true;
+              setNoteValue(event.target.value);
+            }}
             className="mt-1 block w-full rounded-sm border border-rule bg-paper px-3 py-2 text-graphite focus:border-indigo focus:outline-none focus:ring-1 focus:ring-indigo"
           />
         </div>
@@ -364,7 +466,8 @@ export function MeasurementForm({
         </div>
         <p className="mt-3 text-xs leading-relaxed text-graphite/50">{en.measurementForm.diagramHint}</p>
       </div>
-    </form>
+      </form>
+    </>
   );
 }
 
@@ -447,10 +550,26 @@ function DecimalRow({
       </span>
       <span className="hidden text-[10px] uppercase tracking-wide text-graphite/40 sm:inline">{label}</span>
       <span className="flex-1" />
+      {/* The Urdu glyph and English label beside this field are plain
+          <span>s, not a <label> — they're laid out as one dense row, and
+          the English half is hidden below sm. So neither was ever
+          readable as this input's name: a screen reader announced ~16
+          unnamed text boxes, and on a phone the English word isn't on
+          screen at all. aria-label carries both, from the same two
+          strings already rendered, so there is no visual change and no
+          second source of truth for the field names.
+
+          The focus-visible ring below sits on the shared half of the
+          class string rather than inside either branch: the isChanged
+          branch paired focus:outline-none with no focus style of its
+          own, so an already-edited field showed no caret position at
+          all to a keyboard user. Both branches keep their existing
+          border and background colors exactly as before. */}
       <input
         type="text"
         inputMode="decimal"
         data-mkey={fieldKey}
+        aria-label={`${label} (${ur})`}
         value={value}
         onFocus={onFocus}
         onChange={(event) => onChange(event.target.value)}
@@ -460,7 +579,7 @@ function DecimalRow({
             onEnter();
           }
         }}
-        className={`w-24 rounded-sm border px-2 py-1 text-right text-xl tabular-nums focus:outline-none ${
+        className={`w-24 rounded-sm border px-2 py-1 text-right text-xl tabular-nums focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo ${
           isChanged
             ? "border-amber bg-amber/10 font-semibold text-amber"
             : "border-rule bg-card text-graphite focus:border-indigo"
@@ -494,13 +613,16 @@ function PocketRow({
         {SHALWAR_POCKET_FIELD.label}
       </span>
       <span className="flex-1" />
+      {/* Same unnamed-control problem as DecimalRow's input, same fix,
+          from the same two already-rendered strings. */}
       <select
         data-mkey={SHALWAR_POCKET_FIELD.key}
         name={SHALWAR_POCKET_FIELD.key}
+        aria-label={`${SHALWAR_POCKET_FIELD.label} (${SHALWAR_POCKET_FIELD.ur})`}
         value={value}
         onFocus={onFocus}
         onChange={(event) => onChange(event.target.value)}
-        className={`rounded-sm border px-2 py-1 text-sm focus:outline-none ${
+        className={`rounded-sm border px-2 py-1 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo ${
           isChanged ? "border-amber bg-amber/10 text-amber" : "border-rule bg-card text-graphite focus:border-indigo"
         }`}
       >

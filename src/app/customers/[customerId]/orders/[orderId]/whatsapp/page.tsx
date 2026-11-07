@@ -8,6 +8,12 @@ import { PageContainer } from "@/components/ui/page-container";
 import { EmptyState } from "@/components/ui/empty-state";
 import { formatDate, formatMoney, formatOrderNumber } from "@/lib/format";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "WhatsApp · Sui Dhaga".
+export const metadata: Metadata = { title: "WhatsApp" };
 
 // WhatsApp message preview/selection (Step 17). Reuses getOrderPrintData
 // (Step 16) for the exact same cross-customer safety check, soft-deleted-
@@ -37,7 +43,7 @@ export default async function WhatsAppPage({
       <PageHeader title={en.whatsapp.pageTitle} backHref={orderHref} backLabel={en.print.backToOrder} />
 
       <PageContainer size="md">
-        <h1 className="text-xl font-semibold text-graphite">{en.whatsapp.pageTitle}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-graphite">{en.whatsapp.pageTitle}</h1>
         <p className="mt-1 text-sm text-graphite/60">
           {customer.name} · {formatOrderNumber(order.orderNumber)}
         </p>

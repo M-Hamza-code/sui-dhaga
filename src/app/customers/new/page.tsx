@@ -2,6 +2,12 @@ import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { NewCustomerForm } from "@/components/customers/new-customer-form";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Add Customer · Sui Dhaga".
+export const metadata: Metadata = { title: "Add Customer" };
 
 // customerCode is intentionally not a field on this form anywhere — it is
 // generated server-side and cannot be supplied by the admin. This is
@@ -22,7 +28,7 @@ export default function NewCustomerPage() {
       <PageHeader title={en.customerForm.newHeading} backHref="/dashboard" backLabel={en.printPreview.backToSearch} />
 
       <PageContainer size="sm">
-        <h1 className="text-xl font-semibold text-graphite">{en.customerForm.newHeading}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-graphite">{en.customerForm.newHeading}</h1>
         <NewCustomerForm />
       </PageContainer>
     </main>

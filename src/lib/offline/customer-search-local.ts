@@ -101,6 +101,10 @@ export async function searchCustomersLocally(rawQuery: string): Promise<Customer
       return {
         id: c.id,
         name: c.name,
+        // Already null here for a customer created offline whose code
+        // the server hasn't assigned yet — passed through as-is, never
+        // substituted with a placeholder.
+        customerCode: c.customerCode,
         phonePrimary: c.phonePrimary,
         orderCount: orderCountById.get(c.id) ?? 0,
         lastOrderAt: lastOrderAtIso ? new Date(lastOrderAtIso) : null,

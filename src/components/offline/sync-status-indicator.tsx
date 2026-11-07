@@ -16,6 +16,8 @@
 // is "Sync now", which calls the EXISTING processSyncQueue() (Phase 4)
 // directly — no second implementation of retry/backoff/delivery logic.
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { en } from "@/lib/locale";
 import {
   readSyncStatusSummary,
   syncStateLabel,
@@ -49,7 +51,11 @@ const DOT_TONE: Record<SyncState, string> = {
   conflict: "bg-red-600",
 };
 
-export function SyncStatusIndicator() {
+/** `onDark` restyles the pill for the indigo navigation rail. The
+ *  state is still carried by the coloured status dot and the label, so
+ *  the pill itself can take one legible light treatment instead of five
+ *  near-invisible dark-on-dark ones. */
+export function SyncStatusIndicator({ onDark = false }: { onDark?: boolean } = {}) {
   const [summary, setSummary] = useState<SyncStatusSummary | null>(null);
   const [online, setOnline] = useState(true);
   const [open, setOpen] = useState(false);
@@ -165,7 +171,7 @@ export function SyncStatusIndicator() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Sync status: ${label}`}
-        className={`flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-xs font-medium transition ${TONE[manualSyncing ? "syncing" : state]}`}
+        className={`flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-xs font-medium transition ${onDark ? "border-white/25 text-white/85 hover:bg-white/10" : TONE[manualSyncing ? "syncing" : state]}`}
       >
         <span className={`h-2 w-2 flex-none rounded-full ${DOT_TONE[manualSyncing ? "syncing" : state]}`} aria-hidden="true" />
         {label}
@@ -176,7 +182,7 @@ export function SyncStatusIndicator() {
         <div
           role="menu"
           aria-label="Sync status details"
-          className="absolute right-0 top-full z-20 mt-2 w-64 rounded-sm border border-rule bg-card p-3 text-sm text-graphite shadow-sm"
+          className={`absolute right-0 z-20 w-64 rounded-sm border border-rule bg-card p-3 text-sm text-graphite shadow-sm ${onDark ? "bottom-full mb-2 lg:left-0 lg:right-auto" : "top-full mt-2"}`}
         >
           {/* Phase 10 (§2/§5) — shown whenever the browser itself is
               offline, regardless of queue state: the most important
@@ -195,7 +201,23 @@ export function SyncStatusIndicator() {
           <p className={online ? undefined : "mt-2"}>{humanQueueSummary(summary)}</p>
 
           {summary.conflictCount > 0 && (
-            <p className="mt-2 text-red-700">This information was changed somewhere else and needs attention before it can sync.</p>
+            <div className="mt-2">
+              <p className="text-red-700">This information was changed somewhere else and needs attention before it can sync.</p>
+              {/* Previously this said a decision was needed but gave
+                  nowhere to make it — the conflict could not actually be
+                  resolved anywhere in the app. This links to the
+                  resolution UI (SyncConflicts, on Settings > General).
+                  Note "Retry failed" below deliberately does NOT apply
+                  to conflicts: resending one unchanged fails for the
+                  same reason every time. */}
+              <Link
+                href="/settings?view=general"
+                onClick={() => setOpen(false)}
+                className="mt-1 inline-block font-medium text-indigo hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
+              >
+                {en.syncConflicts.resolveLink} →
+              </Link>
+            </div>
           )}
           {summary.failedCount > 0 && (
             <p className="mt-2 text-red-700">

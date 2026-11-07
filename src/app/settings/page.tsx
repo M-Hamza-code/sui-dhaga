@@ -4,10 +4,17 @@ import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { PhoneInput } from "@/components/ui/phone-input";
 import { BackupExportControls } from "@/components/backup/backup-export-controls";
+import { SyncConflicts } from "@/components/offline/sync-conflicts";
 import { updateShopSettings } from "@/lib/shop-settings-actions";
 import { parseDefaultPrices } from "@/lib/shop-settings";
 import { SUIT_TYPE_OPTIONS } from "@/lib/order-options";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Settings · Sui Dhaga".
+export const metadata: Metadata = { title: "Settings" };
 
 // S6 Settings (Step 18) — replaces the Step 10 placeholder at the same
 // /settings route. A single plain form (no client-side interactivity
@@ -75,6 +82,10 @@ export default async function SettingsPage({
     getSession(),
   ]);
   const defaultPrices = parseDefaultPrices(shopSettings?.defaultPrices);
+  // Only the two fields that actually print on a customer-facing
+  // document count here — tagline and address are optional on paper,
+  // and nagging about them would train the admin to ignore this.
+  const needsShopDetails = !shopSettings?.name?.trim() || !shopSettings?.phone?.trim();
 
   const heading = view === "profile" ? en.settingsMenu.profile
     : view === "defaults" ? en.settingsMenu.defaultPrice
@@ -86,7 +97,23 @@ export default async function SettingsPage({
       <PageHeader title={en.settings.heading} />
 
       <PageContainer size="sm">
-        <h1 className="text-xl font-semibold text-graphite">{heading}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-graphite">{heading}</h1>
+
+        {/* First-run prompt. A brand-new install has no ShopSettings row
+            at all, so every field on this page renders blank — and the
+            Receipt and Work Order both fall back to the bare app name
+            with NO phone and NO address, which is what the customer
+            physically walks out with. Nothing previously said so, and
+            there is no other moment in the app where the shop is told
+            to come here. Shown only while the two fields that actually
+            appear on a printed document are still empty, so it
+            disappears for good the moment it's dealt with. */}
+        {needsShopDetails && (
+          <div className="mt-6 rounded-sm border border-amber bg-amber/10 px-4 py-3">
+            <p className="text-sm font-medium text-graphite">{en.settings.setupNeededTitle}</p>
+            <p className="mt-1 text-sm text-graphite/70">{en.settings.setupNeededBody}</p>
+          </div>
+        )}
 
         {(searchParams.success || searchParams.error) && (
           <div className="mt-6 space-y-3">
@@ -105,7 +132,7 @@ export default async function SettingsPage({
           <form action={updateShopSettings} className="mt-6 space-y-8">
             {showShopInfo ? (
               <fieldset className="rounded-sm border border-rule border-t-4 border-t-indigo bg-card p-5 shadow-sm">
-                <legend className="px-1 text-xs font-semibold uppercase tracking-widest text-ink">
+                <legend className="px-1 text-sm font-semibold uppercase tracking-wide text-ink">
                   {en.settings.shopInformation}
                 </legend>
                 <div className="mt-3 space-y-4">
@@ -169,7 +196,7 @@ export default async function SettingsPage({
 
             {showOrderDefaults ? (
               <fieldset className="rounded-sm border border-rule border-t-4 border-t-indigo bg-card p-5 shadow-sm">
-                <legend className="px-1 text-xs font-semibold uppercase tracking-widest text-ink">
+                <legend className="px-1 text-sm font-semibold uppercase tracking-wide text-ink">
                   {en.settings.orderDefaults}
                 </legend>
 
@@ -196,7 +223,10 @@ export default async function SettingsPage({
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {SUIT_TYPE_OPTIONS.map((option) => (
                       <div key={option.value} className="flex items-center justify-between gap-3">
-                        <label htmlFor={`price.${option.value}`} className="text-sm text-graphite">
+                        <label
+                          htmlFor={`price.${option.value}`}
+                          className="whitespace-nowrap text-sm text-graphite"
+                        >
                           {option.label}
                         </label>
                         <div className="flex items-center gap-1.5">
@@ -255,10 +285,26 @@ export default async function SettingsPage({
             isn't a second backup/export implementation. Step 51 — only
             rendered when the current view includes it (default, or
             ?view=general). */}
+        {/* Conflict resolution (SyncConflicts). Lives on the General
+            view because that is already where the app's own maintenance
+            concerns sit (Backup, Language) rather than anything about a
+            customer or an order. Renders NOTHING when there are no
+            conflicts, which is the normal state — it never takes up
+            space or implies a problem that isn't there. Deliberately
+            above the Backup/Language grid: when it does appear, it is
+            the most important thing on the screen. It reads the local
+            Dexie queue, so it has to be a Client Component; this page
+            stays a Server Component and simply mounts it. */}
         {showBackupLanguage && (
-          <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${showForm ? "mt-8" : "mt-6"}`}>
+          <div className={showForm ? "mt-8" : "mt-6"}>
+            <SyncConflicts />
+          </div>
+        )}
+
+        {showBackupLanguage && (
+          <div className={`grid grid-cols-1 gap-4 sm:grid-cols-2 ${showForm ? "mt-4" : "mt-6"}`}>
             <fieldset className="rounded-sm border border-dashed border-rule bg-paper p-5">
-              <legend className="px-1 text-xs font-semibold uppercase tracking-widest text-graphite/70">
+              <legend className="px-1 text-sm font-semibold uppercase tracking-wide text-graphite/70">
                 {en.settings.backup}
               </legend>
               <div className="mt-3">
@@ -271,7 +317,7 @@ export default async function SettingsPage({
                 authoritative mockup's S6 exactly. No language-switching
                 functionality is implemented. */}
             <fieldset className="rounded-sm border border-dashed border-rule bg-paper p-5">
-              <legend className="px-1 text-xs font-semibold uppercase tracking-widest text-graphite/70">
+              <legend className="px-1 text-sm font-semibold uppercase tracking-wide text-graphite/70">
                 {en.settings.language}
               </legend>
               <div className="mt-3 flex flex-wrap items-center gap-4">

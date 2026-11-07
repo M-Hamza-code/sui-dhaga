@@ -4,9 +4,12 @@ import { prisma } from "@/lib/prisma";
 import { getOrderPrintData } from "@/lib/order-print-data";
 import { fromSnapshot } from "@/lib/measurement-prefill";
 import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { formatOrderNumber } from "@/lib/format";
 import { PageContainer } from "@/components/ui/page-container";
 import { OrderForm, type OrderEditData } from "@/components/orders/order-form";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
 
 /**
  * Step 63 — Collar and Bain are now a single combined choice (exactly
@@ -25,6 +28,11 @@ function normalizeCollarBain(
   if (collarType) return { collarType, bainType: "" };
   return { collarType: "", bainType: bainType ?? "" };
 }
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Edit Order · Sui Dhaga".
+export const metadata: Metadata = { title: "Edit Order" };
 
 // Step 53 — Edit Order. Reuses getOrderPrintData() (order-print-data.ts)
 // completely unchanged — the exact same order + customer + pocketOption/
@@ -125,7 +133,13 @@ export default async function EditOrderPage({
       />
 
       <PageContainer size="lg">
-        <h1 className="text-xl font-semibold text-graphite">{en.orderForm.editHeading}</h1>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight text-graphite">{en.orderForm.editHeading}</h1>
+          <span className="tabular-nums text-2xl font-semibold text-ink">
+            {formatOrderNumber(order.orderNumber)}
+          </span>
+          <StatusBadge status={order.status} />
+        </div>
         <p className="mt-1 text-sm text-graphite/60">
           {customer.name} · <span className="tabular-nums">{customer.phonePrimary}</span>
         </p>

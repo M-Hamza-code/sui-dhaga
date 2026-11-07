@@ -26,13 +26,25 @@ export function StatCard({
   tone?: "neutral" | "attention" | "positive";
   href?: string;
 }) {
+  // A row of four cards previously rendered every number at identical
+  // weight, so "0 overdue" shouted as loudly as "Rs. 3,000.00
+  // outstanding" and the eye had nothing to land on. A zero is the
+  // absence of work — it should recede, and the caller already tells us
+  // when a number matters by passing a non-neutral tone.
+  const isZero = value === 0 || value === "0";
   const valueClass =
-    tone === "attention" ? "text-amber" : tone === "positive" ? "text-success" : "text-graphite";
+    tone === "attention"
+      ? "text-amber"
+      : tone === "positive"
+        ? "text-success"
+        : isZero
+          ? "text-graphite/35"
+          : "text-graphite";
 
   const content = (
     <>
-      <p className="text-xs font-medium uppercase tracking-wide text-graphite/60">{label}</p>
-      <p className={`mt-1.5 text-2xl font-semibold tabular-nums ${valueClass}`}>{value}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-graphite/55">{label}</p>
+      <p className={`mt-1 whitespace-nowrap text-2xl font-semibold tabular-nums tracking-tight sm:text-3xl ${valueClass}`}>{value}</p>
     </>
   );
 

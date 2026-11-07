@@ -15,7 +15,14 @@ export function GlobalSearchBar({ className }: { className?: string }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [isFocused, setIsFocused] = useState(false);
-  const { results, hasSearched, isPending } = useCustomerSearch(query);
+  // `isPending` was renamed to `isSearching` when useCustomerSearch
+  // stopped reporting it via useTransition (which never actually
+  // observed the async request — see that hook's own header). This
+  // component is not currently rendered anywhere (the header's search
+  // field was removed in Step 51; the file is kept, untouched
+  // otherwise), so this is purely the rename it needs to keep
+  // compiling, with the same meaning in the one place it is read.
+  const { results, hasSearched, isSearching: isPending } = useCustomerSearch(query);
 
   function goToCustomer(customerId: string) {
     setQuery("");

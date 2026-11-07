@@ -3,6 +3,7 @@
 // Client component only for the confirm() prompt — the actual deletion is
 // the server action passed in via `action`, already bound to the
 // customer's id by the caller.
+import { en } from "@/lib/locale";
 export function DeleteCustomerButton({
   action,
   customerName,
@@ -32,9 +33,9 @@ export function DeleteCustomerButton({
     >
       <button
         type="submit"
-        className="rounded-sm border border-red-300 px-4 py-2 text-sm text-red-700 transition hover:bg-red-50"
+        className="rounded-sm border border-red-300 px-4 py-2 text-sm text-red-700 transition hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1"
       >
-        Delete Customer
+        {en.profile.deleteCustomer}
       </button>
     </form>
   );

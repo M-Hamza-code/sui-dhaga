@@ -42,6 +42,7 @@ import {
   DESIGN_OPTION_IMAGES,
 } from "@/lib/order-options";
 import { StyleTile } from "./style-tile";
+import { DuplicatePhoneNotice } from "@/components/customers/duplicate-phone-notice";
 import {
   OrderMeasurementBlock,
   emptyMeasurementBlockValues,
@@ -901,6 +902,13 @@ export function OrderForm({
                   onChange={(event) => update("customerPhonePrimary", event.target.value)}
                   className="mt-1 block w-full rounded-sm border border-rule bg-paper px-3 py-2 text-graphite focus:border-indigo focus:outline-none focus:ring-1 focus:ring-indigo"
                 />
+                {/* Same duplicate-phone warning the customer-only form
+                    shows (new-customer-form.tsx). This combined flow is
+                    the primary way customers get created, so leaving it
+                    out here would have missed most duplicates. Renders
+                    nothing until the number is long enough to be a real
+                    match, and never blocks the save. */}
+                <DuplicatePhoneNotice phone={state.customerPhonePrimary} />
               </div>
               <div>
                 <label htmlFor="phoneSecondary" className="block text-sm font-medium text-graphite">

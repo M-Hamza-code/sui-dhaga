@@ -5,6 +5,12 @@ import { OrderForm } from "@/components/orders/order-form";
 import { parseDefaultPrices } from "@/lib/shop-settings";
 import { getLatestMeasurementForPrefill } from "@/lib/measurement-prefill";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "New Order · Sui Dhaga".
+export const metadata: Metadata = { title: "New Order" };
 
 // Phase 6 (offline-first) — the `notFound()` guard for a missing/
 // deleted Postgres customer is gone, same reasoning as Phase 5's
@@ -53,7 +59,7 @@ export default async function NewOrderPage({
       <PageHeader title="Add Order" backHref={`/customers/${params.customerId}`} backLabel="Back to profile" />
 
       <PageContainer size="lg">
-        <h1 className="text-xl font-semibold text-graphite">{en.orderForm.heading}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-graphite">{en.orderForm.heading}</h1>
         {customer && <p className="mt-1 text-sm text-graphite/60">{customer.name}</p>}
 
         <OrderForm

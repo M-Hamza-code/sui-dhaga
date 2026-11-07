@@ -13,6 +13,12 @@ import { KAMEEZ_FIELDS, SHALWAR_DECIMAL_FIELDS, SHALWAR_POCKET_FIELD } from "@/l
 import { toFractionDisplay } from "@/lib/fractions";
 import { en } from "@/lib/locale";
 import type { Measurement } from "@prisma/client";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Customer Profile · Sui Dhaga".
+export const metadata: Metadata = { title: "Customer Profile" };
 
 // S2 Customer Profile (Step 12). customerCode (SD-######) is deliberately
 // never read into this page's queries, let alone rendered — the
@@ -104,7 +110,7 @@ export default async function CustomerProfilePage({
               </p>
             ) : (
               <div className="overflow-x-auto rounded-sm border border-rule">
-                <table className="w-full min-w-[560px] text-sm">
+                <table className="w-full min-w-[660px] text-sm">
                   <thead>
                     <tr className="border-b border-rule bg-paper text-left text-xs font-medium uppercase tracking-wide text-graphite/60">
                       <th className="px-3 py-2 pl-4 font-medium">{en.profile.orderColumns.order}</th>
@@ -121,18 +127,36 @@ export default async function CustomerProfilePage({
                       const href = `/customers/${params.customerId}/orders/${order.id}`;
                       return (
                         <tr key={order.id} className="border-b border-rule/60 last:border-b-0 hover:bg-paper">
+                          {/* Each cell is its own <Link> to the same order,
+                              the same pattern (and for the same reason) the
+                              Order Board's own table uses. That left five
+                              identical extra tab stops per row and a screen
+                              reader repeating one destination six times.
+                              Only the first cell stays in the tab order;
+                              tabIndex={-1} takes the rest out of it without
+                              affecting clicking, so every cell is still
+                              fully navigable by mouse and touch exactly as
+                              before. */}
                           <td className="p-0">
-                            <Link href={href} className="block px-3 py-2.5 pl-4 tabular-nums font-semibold text-ink">
+                            <Link href={href} className="block px-3 py-2.5 pl-4 tabular-nums font-semibold text-ink whitespace-nowrap">
                               {formatOrderNumber(order.orderNumber)}
                             </Link>
                           </td>
                           <td className="p-0">
-                            <Link href={href} className="block px-3 py-2.5 tabular-nums text-graphite/70">
+                            <Link
+                              href={href}
+                              tabIndex={-1}
+                              className="block px-3 py-2.5 tabular-nums text-graphite/70 whitespace-nowrap"
+                            >
                               {formatDate(order.orderDate)}
                             </Link>
                           </td>
                           <td className="p-0">
-                            <Link href={href} className="block px-3 py-2.5 tabular-nums text-graphite/70">
+                            <Link
+                              href={href}
+                              tabIndex={-1}
+                              className="block px-3 py-2.5 tabular-nums text-graphite/70 whitespace-nowrap"
+                            >
                               {order.deliveryDate ? formatDate(order.deliveryDate) : "—"}
                             </Link>
                           </td>
@@ -141,18 +165,27 @@ export default async function CustomerProfilePage({
                               yet — every order is at least 1 physical suit,
                               so that case falls back to 1 rather than 0. */}
                           <td className="p-0">
-                            <Link href={href} className="block px-3 py-2.5 text-right tabular-nums text-graphite">
+                            <Link
+                              href={href}
+                              tabIndex={-1}
+                              className="block px-3 py-2.5 text-right tabular-nums text-graphite whitespace-nowrap"
+                            >
                               {Math.max(1, order._count.items)}
                             </Link>
                           </td>
                           <td className="p-0">
-                            <Link href={href} className="block px-3 py-2.5 text-right tabular-nums text-graphite">
+                            <Link
+                              href={href}
+                              tabIndex={-1}
+                              className="block px-3 py-2.5 text-right tabular-nums text-graphite whitespace-nowrap"
+                            >
                               {formatMoney(order.totalAmount)}
                             </Link>
                           </td>
                           <td className="p-0">
                             <Link
                               href={href}
+                              tabIndex={-1}
                               className={`block px-3 py-2.5 text-right tabular-nums ${Number(order.balanceAmount) > 0 ? "text-amber" : "text-graphite/40"}`}
                             >
                               {formatMoney(order.balanceAmount)}

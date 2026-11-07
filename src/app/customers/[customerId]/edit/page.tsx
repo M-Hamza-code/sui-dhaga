@@ -3,6 +3,12 @@ import { PageContainer } from "@/components/ui/page-container";
 import { prisma } from "@/lib/prisma";
 import { EditCustomerForm } from "@/components/customers/edit-customer-form";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Edit Customer · Sui Dhaga".
+export const metadata: Metadata = { title: "Edit Customer" };
 
 // customerCode, createdAt, and every id are shown as read-only context
 // only — none of them are inputs on this form, so there is no way to
@@ -40,7 +46,7 @@ export default async function EditCustomerPage({ params }: { params: { customerI
       <PageHeader title={en.customerForm.editHeading} backHref={`/customers/${params.customerId}`} backLabel="Back to profile" />
 
       <PageContainer size="sm">
-        <h1 className="text-xl font-semibold text-graphite">{en.customerForm.editHeading}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-graphite">{en.customerForm.editHeading}</h1>
         <EditCustomerForm customerId={params.customerId} serverCustomer={serverCustomer} />
       </PageContainer>
     </main>

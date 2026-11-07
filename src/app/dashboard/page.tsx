@@ -1,10 +1,18 @@
+import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import { formatMoney, formatDate, formatOrderNumber } from "@/lib/format";
+import { formatMoney } from "@/lib/format";
 import { PageHeader } from "@/components/page-header";
 import { SearchHome } from "@/components/search/search-home";
+import type { CustomerSearchResult } from "@/lib/customer-search-query";
 import { getTodayRange } from "@/lib/date-range";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Customers · Sui Dhaga".
+export const metadata: Metadata = { title: "Customers" };
 
 // S1 Search/Home (Step 11). This is still the /dashboard route — the old
 // Step 7 stat-card dashboard content is fully replaced here, but the URL
@@ -26,7 +34,7 @@ export default async function DashboardPage() {
 
   const { start: todayStart, end: todayEnd } = getTodayRange();
 
-  const [dueTodayCount, overdueCount, outstandingResult, allOrdersRaw] = await Promise.all([
+  const [dueTodayCount, overdueCount, outstandingResult, allCustomersRaw] = await Promise.all([
     // Due today: delivery date is today, not yet delivered.
     prisma.order.count({
       where: { deliveryDate: { gte: todayStart, lt: todayEnd }, status: { not: "DELIVERED" } },
@@ -44,43 +52,55 @@ export default async function DashboardPage() {
       where: { balanceAmount: { gt: 0 }, status: { not: "DELIVERED" } },
       _sum: { balanceAmount: true },
     }),
-    // All orders (every one, not just recent — the S1 "empty space below
-    // search" fill), sorted primarily by the CUSTOMER's own name (A→Z,
-    // case-insensitive) so every order belonging to the same customer
-    // naturally lands adjacent to each other under that customer's
-    // alphabetical position — a plain single-key sort already groups
-    // them, no separate grouping step needed. Most-recent-first is only
-    // the tiebreaker within one customer's own orders.
-    prisma.order.findMany({
-      orderBy: [{ customer: { name: "asc" } }, { createdAt: "desc" }],
+    // Every active customer, A→Z — the idle content for the space below
+    // the search field.
+    //
+    // This replaces the old "All Orders" list that used to fill the same
+    // space. That list made this one screen show ORDERS while idle and
+    // CUSTOMERS once you typed, so the thing you were looking at changed
+    // kind the moment you started searching. Searching here searches
+    // customers (by name, phone, or customer ID), and the nav calls this
+    // screen "Customers" — so the idle list is customers too, and typing
+    // now simply narrows the list already on screen.
+    //
+    // The all-orders view was not dropped: it moved to the Order Board's
+    // own new "All" tab (src/app/orders/page.tsx), where orders live.
+    //
+    // Selected fields are exactly CustomerSearchResult's (see
+    // customer-search-query.ts) so the idle rows and the search-result
+    // rows can be rendered by one shared component rather than two that
+    // drift apart.
+    prisma.customer.findMany({
+      where: { deletedAt: null },
+      orderBy: { name: "asc" },
       select: {
         id: true,
-        orderNumber: true,
-        customerId: true,
-        status: true,
-        deliveryDate: true,
-        balanceAmount: true,
-        customer: { select: { name: true } },
+        name: true,
+        customerCode: true,
+        phonePrimary: true,
+        orders: { select: { orderDate: true }, orderBy: { orderDate: "desc" }, take: 1 },
+        _count: { select: { orders: true } },
+        measurement: { select: { updatedAt: true } },
       },
     }),
   ]);
 
   const outstandingTotal = outstandingResult._sum.balanceAmount ?? 0;
 
-  // Step 59 — formatted server-side into plain strings/booleans before
-  // crossing into the client SearchHome component: a Prisma Decimal
-  // (balanceAmount) isn't itself serializable as a Client Component prop
-  // the way a plain Date is, matching the same "format first, pass
-  // strings down" rule OrderEditData already follows (order-form.tsx).
-  const allOrders = allOrdersRaw.map((order) => ({
-    id: order.id,
-    orderNumberDisplay: formatOrderNumber(order.orderNumber),
-    customerId: order.customerId,
-    customerName: order.customer.name,
-    status: order.status,
-    deliveryDateDisplay: order.deliveryDate ? formatDate(order.deliveryDate) : "—",
-    hasBalance: Number(order.balanceAmount) > 0,
-    balanceDisplay: Number(order.balanceAmount) > 0 ? formatMoney(order.balanceAmount) : en.dashboard.noBalance,
+  // Shaped into exactly CustomerSearchResult — the same objects
+  // useCustomerSearch hands SearchHome for a real search — so the idle
+  // list and the search results are rendered by the same row component
+  // and can't drift apart. No Decimal is involved here (unlike the old
+  // all-orders mapping, which had to stringify balanceAmount), and Date
+  // is a valid Client Component prop, so these pass through as-is.
+  const allCustomers: CustomerSearchResult[] = allCustomersRaw.map((customer) => ({
+    id: customer.id,
+    name: customer.name,
+    customerCode: customer.customerCode,
+    phonePrimary: customer.phonePrimary,
+    orderCount: customer._count.orders,
+    lastOrderAt: customer.orders[0]?.orderDate ?? null,
+    measurementUpdatedAt: customer.measurement?.updatedAt ?? null,
   }));
 
   return (
@@ -91,33 +111,57 @@ export default async function DashboardPage() {
       <PageHeader title="Search" hideSearch />
 
       <div className="flex-1">
-        <SearchHome allOrders={allOrders} />
+        <SearchHome allCustomers={allCustomers} />
       </div>
 
+      {/* These are the same three numbers the Dashboard's own stat cards
+          show (/overview), computed from the same where-clauses — but
+          there they're links into the matching Order Board view and here
+          they were dead text, so the obvious "which orders are those?"
+          click did nothing on the screen the admin actually lands on.
+          Each cell now points at the exact `?tab=` view whose own
+          where-clause matches the number above it, the same destinations
+          StatCard already uses. No query, no number, and no layout
+          changed. */}
       <div className="flex border-t border-rule bg-card">
-        <BottomStripCell label={en.search.dueToday} value={dueTodayCount} />
-        <BottomStripCell label={en.search.overdue} value={overdueCount} attention />
-        <BottomStripCell label={en.search.outstanding} value={formatMoney(outstandingTotal)} attention />
+        <BottomStripCell label={en.search.dueToday} value={dueTodayCount} href="/orders?tab=due-today" />
+        <BottomStripCell label={en.search.overdue} value={overdueCount} attention href="/orders?tab=overdue" />
+        <BottomStripCell
+          label={en.search.outstanding}
+          value={formatMoney(outstandingTotal)}
+          attention
+          href="/orders?tab=outstanding"
+        />
       </div>
     </main>
   );
 }
 
+// `href` makes the whole cell one real <Link> — same structure StatCard
+// already uses for the identical stats on /overview, rather than a
+// nested interactive element. The visual treatment is unchanged apart
+// from a hover tint and a focus ring, both the same ones used elsewhere
+// in the app.
 function BottomStripCell({
   label,
   value,
   attention = false,
+  href,
 }: {
   label: string;
   value: number | string;
   attention?: boolean;
+  href: string;
 }) {
   return (
-    <div className="flex flex-1 items-baseline justify-center gap-2 border-l border-rule px-6 py-3 first:border-l-0">
-      <span className="text-sm text-graphite/60">{label}</span>
-      <span className={`tabular-nums text-xl font-semibold ${attention ? "text-amber" : "text-graphite"}`}>
+    <Link
+      href={href}
+      className="flex flex-1 flex-col items-center justify-center gap-0.5 border-l border-rule px-3 py-3 text-center transition first:border-l-0 hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo sm:flex-row sm:items-baseline sm:gap-2 sm:px-6"
+    >
+      <span className="text-xs text-graphite/60 sm:text-sm">{label}</span>
+      <span className={`whitespace-nowrap tabular-nums text-xl font-semibold ${attention ? "text-amber" : "text-graphite"}`}>
         {value}
       </span>
-    </div>
+    </Link>
   );
 }

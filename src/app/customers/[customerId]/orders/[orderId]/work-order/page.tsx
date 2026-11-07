@@ -22,6 +22,12 @@ import {
   GHERA_TYPE_IMAGES,
   DESIGN_OPTION_IMAGES,
 } from "@/lib/order-options";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Work Order · Sui Dhaga".
+export const metadata: Metadata = { title: "Work Order" };
 
 // Karigar Work Order print preview — Urdu/RTL content (Step 22), now laid
 // out two-per-A4-landscape-sheet with a cut guide between them (Step 23,

@@ -3,6 +3,12 @@ import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { MeasurementForm } from "@/components/measurement/measurement-form";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Measurement · Sui Dhaga".
+export const metadata: Metadata = { title: "Measurement" };
 
 // This ONE route handles both the first measurement (customer.measurement
 // is null, form starts empty) and every later edit (form is pre-filled,
@@ -39,7 +45,7 @@ export default async function MeasurementEditPage({
       <PageHeader title={heading} backHref={`/customers/${params.customerId}`} backLabel="Back to profile" />
 
       <PageContainer size="lg">
-        <h1 className="text-xl font-semibold capitalize text-graphite">{heading}</h1>
+        <h1 className="text-2xl font-semibold capitalize tracking-tight text-graphite">{heading}</h1>
         {customer && <p className="mt-1 text-sm text-graphite/60">{customer.name}</p>}
 
         <MeasurementForm

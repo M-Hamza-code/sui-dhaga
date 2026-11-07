@@ -20,6 +20,12 @@ import {
   CUFF_TYPE_LABELS,
   GHERA_TYPE_LABELS,
 } from "@/lib/order-options";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Order · Sui Dhaga".
+export const metadata: Metadata = { title: "Order" };
 
 // S3's order detail view (Step 14 rebuild). Safely displays the Step 9
 // multi-suit / snapshot graph — an order's default measurement snapshot
@@ -94,30 +100,37 @@ export default async function OrderDetailPage({
               above, is hidden entirely for a soft-deleted customer's
               order (never offered somewhere the save would just be
               rejected server-side — see order-update.ts). */}
+          {/* Each action below sits at px-3.5/py-2 rather than the
+              original px-3/py-1.5 — roughly 38px instead of 30px. This
+              is the app's most-used action cluster and it's used at a
+              counter, frequently on a tablet, where a 30px target is
+              genuinely hard to hit. Same actions, same order, same
+              hrefs; a focus ring is added for the same reason it was
+              added to the header's links. */}
           <div className="mt-5 flex flex-wrap gap-2 border-t border-rule pt-4">
             {!isDeleted && (
               <Link
                 href={`/customers/${customer.id}/orders/${order.id}/edit`}
-                className="rounded-sm border border-rule px-3 py-1.5 text-sm text-graphite transition hover:bg-paper"
+                className="rounded-sm border border-rule px-3.5 py-2 text-sm text-graphite transition hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
               >
                 {en.orderForm.editLinkLabel}
               </Link>
             )}
             <Link
               href={`/customers/${customer.id}/orders/${order.id}/receipt`}
-              className="rounded-sm border border-rule px-3 py-1.5 text-sm text-graphite transition hover:bg-paper"
+              className="rounded-sm border border-rule px-3.5 py-2 text-sm text-graphite transition hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
             >
               {en.print.receipt.linkLabel}
             </Link>
             <Link
               href={`/customers/${customer.id}/orders/${order.id}/work-order`}
-              className="rounded-sm border border-rule px-3 py-1.5 text-sm text-graphite transition hover:bg-paper"
+              className="rounded-sm border border-rule px-3.5 py-2 text-sm text-graphite transition hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
             >
               {en.print.workOrder.linkLabel}
             </Link>
             <Link
               href={`/customers/${customer.id}/orders/${order.id}/whatsapp`}
-              className="rounded-sm border border-rule px-3 py-1.5 text-sm text-graphite transition hover:bg-paper"
+              className="rounded-sm border border-rule px-3.5 py-2 text-sm text-graphite transition hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
             >
               {en.whatsapp.linkLabel}
             </Link>

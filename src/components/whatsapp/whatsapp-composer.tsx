@@ -51,7 +51,7 @@ export function WhatsAppComposer({
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-ink">{en.whatsapp.chooseTemplate}</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink">{en.whatsapp.chooseTemplate}</h2>
         <div className="mt-2 flex flex-wrap gap-2">
           {WHATSAPP_TEMPLATE_IDS.map((id) => (
             <button

@@ -1,4 +1,10 @@
 import { SyncStatusIndicator } from "@/components/offline/sync-status-indicator";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Offline · Sui Dhaga".
+export const metadata: Metadata = { title: "Offline" };
 
 // Phase 8 (Part D/F/K) — the Service Worker's (public/sw.js) offline
 // navigation fallback. Served from Cache Storage, entirely client-side,

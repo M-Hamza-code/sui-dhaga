@@ -2,7 +2,8 @@
   "app": {
     "name": "Sui Dhaga",
     "nameUrdu": "سوئی دھاگہ",
-    "tagline": "Sui Dhaga · Bahawalpur"
+    "tagline": "Sui Dhaga · Bahawalpur",
+    "skipToContent": "Skip to main content"
   },
   "nav": {
     "search": "Search",
@@ -11,14 +12,17 @@
     "logout": "Logout",
     "dashboard": "Dashboard",
     "customersSearch": "Customers",
-    "admin": "Admin"
+    "admin": "Admin",
+    "primaryNavAriaLabel": "Main sections"
   },
   "auth": {
     "signInSubtitle": "Admin sign in",
     "email": "Email",
     "password": "Password",
     "loginButton": "Login",
-    "invalidCredentials": "Invalid email or password."
+    "invalidCredentials": "Invalid email or password.",
+    "lockedOutTemplate": "Too many failed attempts. Try again in {minutes} minutes.",
+    "lockedOutOneMinute": "Too many failed attempts. Try again in a minute."
   },
   "customersList": {
     "heading": "Customers",
@@ -42,7 +46,10 @@
     "newSubmit": "Save Customer",
     "editHeading": "Edit Customer",
     "editSubtitleTemplate": "Customer ID: {code} (cannot be changed)",
-    "editSubmit": "Save Changes"
+    "editSubmit": "Save Changes",
+    "duplicatePhoneOne": "A customer with this phone number already exists.",
+    "duplicatePhoneManyTemplate": "{count} customers already have this phone number.",
+    "duplicatePhoneHint": "Open their record to add an order, or carry on to create a separate customer."
   },
   "backup": {
     "backupButton": "Backup data",
@@ -73,10 +80,12 @@
     "recentCustomersEmpty": "No customers yet.",
     "quickActions": "Quick Actions",
     "quickActionSearch": "Search Customer",
-    "noBalance": "No balance due"
+    "noBalance": "No balance due",
+    "setupNeeded": "Your shop name and phone aren't set yet — receipts will print without them.",
+    "setupNeededAction": "Add shop details"
   },
   "search": {
-    "placeholder": "Search by name or phone",
+    "placeholder": "Search by name, phone, or customer ID",
     "ariaLabel": "Search customers",
     "hint": "Press / to search from anywhere · Enter opens the top result",
     "newCustomer": "+ New Customer & Order",
@@ -92,9 +101,10 @@
     "dueToday": "Due today",
     "overdue": "Overdue",
     "outstanding": "Outstanding",
-    "allOrders": "All Orders",
-    "allOrdersEmpty": "No orders yet.",
-    "allOrdersHint": "Sorted by customer name (A–Z)"
+    "noCustomerCode": "No ID yet",
+    "allCustomers": "All Customers",
+    "allCustomersHint": "Sorted by name (A–Z)",
+    "allCustomersEmpty": "No customers yet."
   },
   "profile": {
     "newOrder": "New order",
@@ -132,7 +142,10 @@
     "changedNone": "No changes yet",
     "changedOne": "1 measurement changed",
     "changedManyTemplate": "{count} measurements changed",
-    "save": "Save measurement"
+    "save": "Save measurement",
+    "draftRestored": "Restored unsaved measurements from this device.",
+    "draftDiscard": "Discard and show saved values",
+    "draftSaving": "Unsaved — kept on this device"
   },
   "orderForm": {
     "heading": "New order",
@@ -267,7 +280,9 @@
     "language": "Language",
     "languageHint": "Interface language — English only in v1. All copy lives in one locale table, so an Urdu interface is a config change.",
     "languageEnglish": "English",
-    "adminEmail": "Admin Email"
+    "adminEmail": "Admin Email",
+    "setupNeededTitle": "Add your shop details",
+    "setupNeededBody": "Receipts and work orders print your shop name, phone, and address at the top. Until these are filled in, customers receive a receipt with no way to contact you."
   },
   "settingsMenu": {
     "profile": "Profile",
@@ -313,6 +328,39 @@
       "balance": "Balance",
       "status": "Status",
       "actions": "Actions"
-    }
+    },
+    "statusSelectAriaLabel": "Order status",
+    "tabAll": "All",
+    "emptyAllTitle": "No orders yet"
+  },
+  "notFound": {
+    "code": "Not found",
+    "title": "This page doesn't exist",
+    "description": "The link may be out of date, or the customer or order it pointed to has since been removed.",
+    "goToDashboard": "Go to Dashboard",
+    "searchCustomers": "Search customers"
+  },
+  "errorPage": {
+    "title": "Something went wrong",
+    "description": "This screen couldn't be loaded. It's usually a brief connection problem with the server.",
+    "dataSafe": "Anything you've already saved is safe — including changes still waiting to sync from this device.",
+    "tryAgain": "Try again",
+    "goToDashboard": "Go to Dashboard",
+    "referenceTemplate": "Reference: {digest}"
+  },
+  "syncConflicts": {
+    "heading": "Changes needing a decision",
+    "intro": "These edits couldn't be saved to the server because the same record was changed somewhere else. Nothing has been lost — choose which version to keep.",
+    "orderLabelTemplate": "Order {number} — {customer}",
+    "unknownCustomer": "Unknown customer",
+    "viewRecord": "View record",
+    "keepLocal": "Keep my version",
+    "useServer": "Use the server's version",
+    "keepLocalUnavailable": "The server didn't report its current version, so this edit can't be re-applied.",
+    "working": "Working…",
+    "optionsHint": "Keep my version replaces what's on the server. Use the server's version discards the edit made on this device.",
+    "confirmKeepLocalTemplate": "Keep your version of \"{record}\"?\n\nThis replaces whatever was changed on the server.",
+    "confirmUseServerTemplate": "Use the server's version of \"{record}\"?\n\nThe edit you made on this device will be discarded and cannot be recovered.",
+    "resolveLink": "Review and resolve"
   }
 }

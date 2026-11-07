@@ -31,7 +31,7 @@ export function SectionCard({
   return (
     <div id={id} className="scroll-mt-20 rounded-sm border border-rule bg-card p-5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-ink">{title}</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink">{title}</h2>
         {action}
       </div>
       <div className="mt-3">{children}</div>

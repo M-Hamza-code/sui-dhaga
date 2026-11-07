@@ -67,34 +67,60 @@ export function OrderBoardTable({
             const suitCount = Math.max(1, order._count.items);
             return (
               <tr key={order.id} className="border-b border-rule/60 transition last:border-b-0 hover:bg-indigo/5">
+                {/* Each cell in a row is its own <Link> to the same order
+                    (see this file's header for why the whole <tr> can't
+                    be one <a>). That left five identical extra tab stops
+                    per row — 40+ to cross one screenful — and a screen
+                    reader repeating the same destination six times. Only
+                    the first cell stays in the tab order; tabIndex={-1}
+                    takes the rest out of it without affecting clicking,
+                    so every cell is still fully navigable by mouse and
+                    touch exactly as before. */}
                 <td className={`p-0 ${isOverdue ? "border-l-4 border-l-amber" : ""}`}>
                   <Link href={href} className="block px-4 py-3 tabular-nums font-semibold text-ink">
                     {formatOrderNumber(order.orderNumber)}
                   </Link>
                 </td>
                 <td className="p-0">
-                  <Link href={href} className="block px-3 py-3 font-medium text-graphite">
+                  <Link
+                    href={href}
+                    tabIndex={-1}
+                    className="block px-3 py-3 font-medium text-graphite"
+                  >
                     {order.customer.name}
                   </Link>
                 </td>
                 <td className="p-0">
-                  <Link href={href} className="block px-3 py-3 tabular-nums text-graphite/70">
+                  <Link
+                    href={href}
+                    tabIndex={-1}
+                    className="block px-3 py-3 tabular-nums text-graphite/70"
+                  >
                     {order.customer.phonePrimary}
                   </Link>
                 </td>
                 <td className="p-0">
-                  <Link href={href} className={`block px-3 py-3 tabular-nums ${isOverdue ? "font-semibold text-amber" : "text-graphite/70"}`}>
+                  <Link
+                    href={href}
+                    tabIndex={-1}
+                    className={`block px-3 py-3 tabular-nums ${isOverdue ? "font-semibold text-amber" : "text-graphite/70"}`}
+                  >
                     {order.deliveryDate ? formatDate(order.deliveryDate) : "—"}
                   </Link>
                 </td>
                 <td className="p-0">
-                  <Link href={href} className="block px-3 py-3 text-right tabular-nums text-graphite">
+                  <Link
+                    href={href}
+                    tabIndex={-1}
+                    className="block px-3 py-3 text-right tabular-nums text-graphite"
+                  >
                     {suitCount}
                   </Link>
                 </td>
                 <td className="p-0">
                   <Link
                     href={href}
+                    tabIndex={-1}
                     className={`block px-3 py-3 text-right tabular-nums ${Number(order.balanceAmount) > 0 ? "font-medium text-amber" : "text-graphite/40"}`}
                   >
                     {formatMoney(order.balanceAmount)}

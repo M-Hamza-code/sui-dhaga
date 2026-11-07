@@ -142,6 +142,12 @@ export function OrderStatusForm({
   return (
     <select
       name="status"
+      // This control has no visible <label> anywhere — on the Order
+      // Board it's one cell in a dense row, and on Order Detail it sits
+      // alone in the header card. So a screen reader had nothing to
+      // announce but the current value, with no indication that the
+      // dropdown changes an order's status.
+      aria-label={en.orderBoard.statusSelectAriaLabel}
       value={displayStatus}
       onChange={handleChange}
       className={`rounded-sm border px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-indigo ${STATUS_TONE[displayStatus]}`}

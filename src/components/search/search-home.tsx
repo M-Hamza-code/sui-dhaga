@@ -11,40 +11,26 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import type { OrderStatus } from "@prisma/client";
 import { useCustomerSearch } from "./use-customer-search";
+import type { CustomerSearchResult } from "@/lib/customer-search-query";
 import { formatRelativeTime } from "@/lib/format";
-import { StatusBadge } from "@/components/ui/status-badge";
-import { DeleteOrderIconButton } from "@/components/orders/delete-order-icon-button";
 import { en } from "@/lib/locale";
 
-// Step 59 — one row for the "All Orders" list filling the space below
-// the search bar when no search is active (see the final render branch
-// below). Pre-formatted server-side in dashboard/page.tsx before
-// crossing into this Client Component — see that file's own comment on
-// why (a Prisma Decimal isn't itself a valid Client Component prop the
-// way a plain string/boolean/Date is).
-export interface AllOrdersRow {
-  id: string;
-  orderNumberDisplay: string;
-  customerId: string;
-  customerName: string;
-  status: OrderStatus;
-  deliveryDateDisplay: string;
-  hasBalance: boolean;
-  balanceDisplay: string;
-}
-
-export function SearchHome({ allOrders }: { allOrders: AllOrdersRow[] }) {
+export function SearchHome({ allCustomers }: { allCustomers: CustomerSearchResult[] }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const newCustomerRef = useRef<HTMLAnchorElement>(null);
 
   const [query, setQuery] = useState("");
-  const { results, hasSearched, isPending, searchFailed, isLocalResult } = useCustomerSearch(query);
+  const { results, hasSearched, isSearching, searchFailed, isLocalResult, runSearchNow } =
+    useCustomerSearch(query);
   // Phase 10 (§8/§11) — a failed search (most commonly: offline) is
   // its own distinct outcome, never folded into "no customers found".
-  const noResults = hasSearched && !isPending && results.length === 0 && !searchFailed;
+  //
+  // Gated on `isSearching` (debounce + request), which now actually
+  // reports the wait — so "No customer found" can no longer appear over
+  // a half-typed query while its search is still coming.
+  const noResults = hasSearched && !isSearching && results.length === 0 && !searchFailed;
 
   // Autofocus on load. This local handler still covers "/" and Escape
   // while this screen itself is mounted and focused (Escape here also
@@ -85,9 +71,19 @@ export function SearchHome({ allOrders }: { allOrders: AllOrdersRow[] }) {
   }
 
   function onInputKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    // Enter opens the top result — but never act on a stale result set
-    // while a fresher keystroke's search is still in flight.
-    if (event.key === "Enter" && !isPending && results.length > 0) {
+    if (event.key !== "Enter") return;
+    // Enter opens the top result — but never acts on a stale result set
+    // while a fresher keystroke's search is still pending. That guard
+    // was always the intent; it only started working once isSearching
+    // became honest. So that Enter isn't simply swallowed during the
+    // 2s debounce, it now asks for the search immediately instead —
+    // results arrive in the usual request time and a second Enter
+    // opens the top one.
+    if (isSearching) {
+      runSearchNow();
+      return;
+    }
+    if (results.length > 0) {
       goToCustomer(results[0].id);
     }
   }
@@ -109,7 +105,7 @@ export function SearchHome({ allOrders }: { allOrders: AllOrdersRow[] }) {
         />
       </div>
 
-      <div className="mt-3 flex items-center justify-between">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         {/* Step 32: two distinct, equally-reachable new-customer flows —
             the combined customer+order flow (Step 25, unchanged: same
             href, same primary styling, same position) stays the default,
@@ -120,21 +116,34 @@ export function SearchHome({ allOrders }: { allOrders: AllOrdersRow[] }) {
         <div className="flex items-center gap-4">
           <Link
             href="/customers/new/order"
-            className="rounded-sm bg-indigo px-4 py-2 text-sm text-white transition hover:bg-indigo-hover"
+            className="whitespace-nowrap rounded-sm bg-indigo px-4 py-2 text-sm text-white transition hover:bg-indigo-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-2"
           >
             {en.search.newCustomer}
           </Link>
-          <Link href="/customers/new" className="text-sm text-graphite/70 hover:text-ink hover:underline">
+          <Link
+            href="/customers/new"
+            className="whitespace-nowrap rounded-sm text-sm text-graphite/70 hover:text-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
+          >
             {en.search.newCustomerOnly}
           </Link>
         </div>
-        <span className="text-xs text-graphite/50">{en.search.hint}</span>
+        <span className="hidden text-xs text-graphite/50 sm:inline">{en.search.hint}</span>
       </div>
 
       <div className="mt-6 border-t border-rule" />
 
-      {isPending ? (
-        <p className="py-10 text-center text-sm text-graphite/50">{en.search.searching}</p>
+      {isSearching ? (
+        // Reached from the first keystroke now, not just while the
+        // request is open — `isSearching` covers the debounce wait too,
+        // which is the part that used to look like nothing happening.
+        // aria-live so the wait is announced rather than only drawn.
+        <div className="flex items-center justify-center gap-2.5 py-10" role="status" aria-live="polite">
+          <span
+            className="h-4 w-4 flex-none animate-spin rounded-full border-2 border-rule border-t-indigo"
+            aria-hidden="true"
+          />
+          <span className="text-sm text-graphite/60">{en.search.searching}</span>
+        </div>
       ) : searchFailed ? (
         // Phase 10 (§8/§11) — honest, distinct from "no customers
         // found": reached only when BOTH the server search AND the
@@ -156,38 +165,11 @@ export function SearchHome({ allOrders }: { allOrders: AllOrdersRow[] }) {
             <p className="pt-3 text-xs text-graphite/50">Showing saved results from this device (offline).</p>
           )}
           <ul>
-          {results.map((customer, index) => (
-            <li key={customer.id}>
-              <button
-                type="button"
-                onClick={() => goToCustomer(customer.id)}
-                className="flex w-full items-start gap-4 border-b border-rule/60 px-1 py-3 text-left transition hover:bg-paper"
-              >
-                <span className={`text-lg leading-7 ${index === 0 ? "text-indigo" : "text-rule"}`}>›</span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                    <span className="text-lg font-medium text-graphite">{customer.name}</span>
-                    <span className="tabular-nums text-base text-graphite">{customer.phonePrimary}</span>
-                    <span className="ml-auto text-sm text-graphite/60">
-                      {customer.lastOrderAt ? formatRelativeTime(customer.lastOrderAt) : en.search.noOrders}
-                    </span>
-                  </span>
-                  <span className="mt-0.5 block text-sm text-graphite/50">
-                    {customer.orderCount === 1
-                      ? en.search.oneOrder
-                      : en.search.orderCountTemplate.replace("{count}", String(customer.orderCount))}
-                    {" · "}
-                    {customer.measurementUpdatedAt
-                      ? en.search.measurementAgeTemplate.replace(
-                          "{age}",
-                          formatRelativeTime(customer.measurementUpdatedAt)
-                        )
-                      : en.search.noMeasurement}
-                  </span>
-                </span>
-              </button>
-            </li>
-          ))}
+            {results.map((customer, index) => (
+              // index === 0 marks the top result: Enter opens that one,
+              // so its chevron is tinted to show which row that is.
+              <CustomerRow key={customer.id} customer={customer} isTop={index === 0} onOpen={goToCustomer} />
+            ))}
           </ul>
         </>
       ) : noResults ? (
@@ -211,58 +193,107 @@ export function SearchHome({ allOrders }: { allOrders: AllOrdersRow[] }) {
           </Link>
         </div>
       ) : (
-        // Step 59 — fills the space that used to render nothing at all
-        // once the page loads with no search typed yet. Existing search
-        // behavior above (isPending/searchFailed/results/noResults) is
-        // completely untouched — this branch only ever shows while none
-        // of those apply, and disappears the instant a query starts
-        // debouncing, exactly like "no results" already did in its place.
+        // Idle state: every customer, A→Z.
+        //
+        // This used to be an "All Orders" list (Step 59), added purely to
+        // fill space that otherwise rendered nothing. The side effect was
+        // that this one screen showed ORDERS while idle and CUSTOMERS the
+        // moment you typed — the thing on screen changed kind mid-
+        // interaction. Search here matches customers (name, phone, or
+        // customer ID) and the nav calls this screen "Customers", so the
+        // idle list is customers too: typing now narrows the list already
+        // in front of you instead of replacing it with a different sort
+        // of thing.
+        //
+        // The all-orders view wasn't dropped — it moved to the Order
+        // Board's own "All" tab, where orders belong.
+        //
+        // Rows are the SAME <CustomerRow> the search-results branch above
+        // renders, from the same CustomerSearchResult shape, so the two
+        // states cannot drift apart visually. The only difference is that
+        // no row is marked "top result" here, because Enter has nothing
+        // to open until a search has actually run.
         <div className="pt-4">
           <div className="flex items-baseline justify-between">
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-ink">{en.search.allOrders}</h2>
-            <span className="text-xs text-graphite/50">{en.search.allOrdersHint}</span>
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-ink">{en.search.allCustomers}</h2>
+            <span className="text-xs text-graphite/50">{en.search.allCustomersHint}</span>
           </div>
-          {allOrders.length === 0 ? (
-            <p className="mt-3 text-sm text-graphite/50">{en.search.allOrdersEmpty}</p>
+          {allCustomers.length === 0 ? (
+            <p className="mt-3 text-sm text-graphite/50">{en.search.allCustomersEmpty}</p>
           ) : (
-            <ul className="mt-2 divide-y divide-rule/60">
-              {allOrders.map((order) => (
-                // Step 65 — the Link wraps only the navigable cells (order
-                // number through Status), not the whole row: a <button>
-                // (DeleteOrderIconButton) can't validly nest inside an <a>,
-                // the same reasoning order-board-table.tsx's own header
-                // comment documents for its per-cell Links. The delete
-                // icon sits as a sibling right after Status, same as the
-                // Order Board.
-                <li
-                  key={order.id}
-                  className="flex items-center gap-3 py-2.5 text-sm transition hover:bg-paper"
-                >
-                  <Link
-                    href={`/customers/${order.customerId}/orders/${order.id}`}
-                    className="flex min-w-0 flex-1 items-center gap-3"
-                  >
-                    <span className="w-12 flex-none tabular-nums font-semibold text-ink">{order.orderNumberDisplay}</span>
-                    <span className="min-w-0 flex-1 truncate text-graphite">{order.customerName}</span>
-                    <span className="flex-none tabular-nums text-graphite/60">{order.deliveryDateDisplay}</span>
-                    <span className={`w-24 flex-none text-right tabular-nums ${order.hasBalance ? "text-amber" : "text-graphite/40"}`}>
-                      {order.balanceDisplay}
-                    </span>
-                    <span className="flex-none">
-                      <StatusBadge status={order.status} />
-                    </span>
-                  </Link>
-                  <DeleteOrderIconButton
-                    customerId={order.customerId}
-                    orderId={order.id}
-                    orderNumberDisplay={order.orderNumberDisplay}
-                  />
-                </li>
+            <ul className="mt-1">
+              {allCustomers.map((customer) => (
+                <CustomerRow key={customer.id} customer={customer} isTop={false} onOpen={goToCustomer} />
               ))}
             </ul>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One customer row — used by BOTH the idle "All Customers" list and the
+ * search-results list, which is the whole point: the two states differ
+ * only in which customers they contain, never in how a customer looks.
+ *
+ * This is the markup that was previously inlined in the search-results
+ * branch, unchanged: the chevron, name, phone, last-order time, then the
+ * customer ID / order count / measurement-age line underneath.
+ *
+ * `isTop` only tints the chevron to mark the row Enter would open. The
+ * idle list passes false for every row — nothing is "the top result"
+ * until a search has run.
+ */
+function CustomerRow({
+  customer,
+  isTop,
+  onOpen,
+}: {
+  customer: CustomerSearchResult;
+  isTop: boolean;
+  onOpen: (customerId: string) => void;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => onOpen(customer.id)}
+        className="flex w-full items-start gap-4 border-b border-rule/60 px-1 py-3 text-left transition hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo"
+      >
+        <span className={`text-lg leading-7 ${isTop ? "text-indigo" : "text-rule"}`}>›</span>
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <span className="text-lg font-medium text-graphite">{customer.name}</span>
+            <span className="tabular-nums text-base text-graphite">{customer.phonePrimary}</span>
+            <span className="ml-auto text-sm text-graphite/60">
+              {customer.lastOrderAt ? formatRelativeTime(customer.lastOrderAt) : en.search.noOrders}
+            </span>
+          </span>
+          <span className="mt-0.5 block text-sm text-graphite/50">
+            {/* The customer number (SD-000123) — readable straight off a
+                row instead of having to open the profile. Null only for a
+                customer created offline whose code the server hasn't
+                assigned yet; said plainly rather than rendered as a blank
+                or a fabricated number. */}
+            <span className="tabular-nums text-graphite/70">
+              {customer.customerCode ?? en.search.noCustomerCode}
+            </span>
+            {" · "}
+            {customer.orderCount === 1
+              ? en.search.oneOrder
+              : en.search.orderCountTemplate.replace("{count}", String(customer.orderCount))}
+            {" · "}
+            {customer.measurementUpdatedAt
+              ? en.search.measurementAgeTemplate.replace(
+                  "{age}",
+                  formatRelativeTime(customer.measurementUpdatedAt)
+                )
+              : en.search.noMeasurement}
+          </span>
+        </span>
+      </button>
+    </li>
   );
 }

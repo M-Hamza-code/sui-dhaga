@@ -51,7 +51,7 @@ export function DeleteOrderButton({
         type="button"
         onClick={handleClick}
         disabled={deleting}
-        className="rounded-sm border border-red-300 px-3 py-1.5 text-sm text-red-700 transition hover:bg-red-50 disabled:opacity-60"
+        className="rounded-sm border border-red-300 px-3.5 py-2 text-sm text-red-700 transition hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:ring-offset-1 disabled:opacity-60"
       >
         {deleting ? en.orderDetail.deletingOrder : en.orderDetail.deleteOrderLinkLabel}
       </button>

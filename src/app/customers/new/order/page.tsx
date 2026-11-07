@@ -4,6 +4,12 @@ import { PageContainer } from "@/components/ui/page-container";
 import { OrderForm } from "@/components/orders/order-form";
 import { parseDefaultPrices } from "@/lib/shop-settings";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "New Customer & Order · Sui Dhaga".
+export const metadata: Metadata = { title: "New Customer & Order" };
 
 // Step 25 — the authoritative fast flow: Dashboard "New customer" opens
 // this page directly (no separate /customers/new detour first). Reuses
@@ -38,7 +44,7 @@ export default async function NewCustomerOrderPage({
       <PageHeader title={en.orderForm.newCustomerHeading} backHref="/dashboard" backLabel={en.nav.search} />
 
       <PageContainer size="lg">
-        <h1 className="text-xl font-semibold text-graphite">{en.orderForm.newCustomerHeading}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-graphite">{en.orderForm.newCustomerHeading}</h1>
 
         <OrderForm
           mode="new"

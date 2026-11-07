@@ -5,6 +5,12 @@ import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { formatOrderNumber } from "@/lib/format";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Print Preview · Sui Dhaga".
+export const metadata: Metadata = { title: "Print Preview" };
 
 // S5 Print Preview (Step 29) — the authoritative design brief/mockup's
 // required post-save destination: "Order N saved" + Print / Send on

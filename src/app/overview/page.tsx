@@ -9,6 +9,12 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { formatDate, formatMoney, formatOrderNumber, formatRelativeTime } from "@/lib/format";
 import { getTodayRange } from "@/lib/date-range";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Dashboard · Sui Dhaga".
+export const metadata: Metadata = { title: "Dashboard" };
 
 // Step 46 — the real Dashboard, replacing the Step 45 placeholder.
 // /dashboard remains S1 Search/Home, completely untouched, at its own
@@ -77,6 +83,12 @@ export default async function OverviewPage() {
 
   const outstandingTotal = outstandingResult._sum.balanceAmount ?? 0;
   const shopName = shopSettings?.name || en.app.name;
+  // Same check the Settings page makes. Surfaced here as well because
+  // Settings is the one screen a shop has no reason to open on its own —
+  // without this, the gap is only discovered when a customer is handed a
+  // receipt with no phone number on it. This page already reads
+  // shopSettings for the greeting above, so it costs no extra query.
+  const needsShopDetails = !shopSettings?.name?.trim() || !shopSettings?.phone?.trim();
 
   return (
     <main className="min-h-screen bg-paper">
@@ -84,11 +96,23 @@ export default async function OverviewPage() {
 
       <PageContainer size="xl">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h1 className="text-xl font-semibold text-graphite">
+          <h1 className="text-2xl font-semibold tracking-tight text-graphite">
             {en.dashboard.welcomeTemplate.replace("{shop}", shopName)}
           </h1>
           <span className="tabular-nums text-sm text-graphite/50">{formatDate(new Date())}</span>
         </div>
+
+        {needsShopDetails && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-sm border border-amber bg-amber/10 px-4 py-3">
+            <p className="text-sm text-graphite">{en.dashboard.setupNeeded}</p>
+            <Link
+              href="/settings?view=profile"
+              className="rounded-sm border border-amber px-3 py-1.5 text-sm font-medium text-graphite transition hover:bg-amber/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
+            >
+              {en.dashboard.setupNeededAction}
+            </Link>
+          </div>
+        )}
 
         {/* Stats — same four numbers already shown on S1's bottom strip
             (Due today/Overdue/Outstanding) plus Ready (Order Board's own
@@ -100,7 +124,7 @@ export default async function OverviewPage() {
             exact same balanceAmount > 0 filter this card's own number
             already uses — so the destination always matches what's shown
             here. */}
-        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatCard label={en.search.dueToday} value={dueTodayCount} href="/orders?tab=due-today" />
           <StatCard
             label={en.search.overdue}
@@ -123,30 +147,33 @@ export default async function OverviewPage() {
         </div>
 
         {/* Quick Actions — links only, every target is an existing,
-            unchanged route/flow. No new forms, no new logic. */}
-        <div className="mt-6">
-          <SectionCard title={en.dashboard.quickActions}>
-            <div className="flex flex-wrap gap-3">
-              <Link
-                href="/customers/new/order"
-                className="rounded-sm bg-indigo px-4 py-2 text-sm text-white transition hover:bg-indigo-hover"
-              >
-                {en.search.newCustomer}
-              </Link>
-              <Link
-                href="/customers/new"
-                className="rounded-sm border border-rule px-4 py-2 text-sm text-graphite transition hover:bg-paper"
-              >
-                {en.search.newCustomerOnly}
-              </Link>
-              <Link
-                href="/dashboard"
-                className="rounded-sm border border-rule px-4 py-2 text-sm text-graphite transition hover:bg-paper"
-              >
-                {en.dashboard.quickActionSearch}
-              </Link>
-            </div>
-          </SectionCard>
+            unchanged route/flow. No new forms, no new logic.
+
+            No longer wrapped in a SectionCard. Three buttons inside a
+            bordered, shadowed panel with its own heading gave the
+            lightest content on the page the same visual weight as the
+            order and customer lists below it — a lot of chrome around
+            what is really just a toolbar. The buttons are the content;
+            they don't need a container to announce them. */}
+        <div className="mt-6 flex flex-wrap gap-2.5">
+          <Link
+            href="/customers/new/order"
+            className="rounded-sm bg-indigo px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-2"
+          >
+            {en.search.newCustomer}
+          </Link>
+          <Link
+            href="/customers/new"
+            className="rounded-sm border border-rule bg-card px-4 py-2.5 text-sm text-graphite transition hover:border-indigo/40 hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
+          >
+            {en.search.newCustomerOnly}
+          </Link>
+          <Link
+            href="/dashboard"
+            className="rounded-sm border border-rule bg-card px-4 py-2.5 text-sm text-graphite transition hover:border-indigo/40 hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
+          >
+            {en.dashboard.quickActionSearch}
+          </Link>
         </div>
 
         {/* Recent activity — two columns, matching S2's own established
@@ -173,8 +200,8 @@ export default async function OverviewPage() {
                       <span className="w-12 flex-none tabular-nums font-semibold text-ink">
                         {formatOrderNumber(order.orderNumber)}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-graphite">{order.customer.name}</span>
-                      <span className="flex-none tabular-nums text-graphite/60">
+                      <span className="min-w-[7rem] flex-1 truncate text-graphite">{order.customer.name}</span>
+                      <span className="hidden flex-none tabular-nums text-graphite/60 sm:inline">
                         {order.deliveryDate ? formatDate(order.deliveryDate) : "—"}
                       </span>
                       <span

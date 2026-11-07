@@ -7,8 +7,9 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { OrderBoardTable } from "@/components/orders/order-board-table";
 import { getTodayRange } from "@/lib/date-range";
 import { en } from "@/lib/locale";
+import type { Metadata } from "next";
 
-type Tab = "new" | "overdue" | "due-today" | "ready" | "outstanding" | "delivered";
+type Tab = "all" | "new" | "overdue" | "due-today" | "ready" | "outstanding" | "delivered";
 // Step 47 — "outstanding" added as a 4th recognized value so the
 // Dashboard's Outstanding stat card has somewhere safe to link to. It is
 // deliberately NOT part of the default-tab-selection fallback below (see
@@ -19,7 +20,21 @@ type Tab = "new" | "overdue" | "due-today" | "ready" | "outstanding" | "delivere
 // recognized ?tab= values, each with its own count/where-clause below,
 // neither touching the existing fallback (still only ever
 // overdue/due-today/ready — see `activeTab`).
-const TABS: Tab[] = ["new", "overdue", "due-today", "ready", "outstanding", "delivered"];
+// "all" (added alongside the S1 idle-list change) is the one tab with
+// no filter at all — every order regardless of status or date. It
+// exists because S1 Search/Home used to carry that view as its own
+// "All Orders" list, which made that screen show ORDERS when idle and
+// CUSTOMERS when searching; the list moved here, where orders live, and
+// S1's idle state became a customer list to match its search results.
+// Like "outstanding"/"new"/"delivered" before it, this is deliberately
+// NOT part of the default-tab fallback below — visiting /orders with no
+// ?tab= param behaves exactly as it did before this tab existed.
+const TABS: Tab[] = ["all", "new", "overdue", "due-today", "ready", "outstanding", "delivered"];
+
+// Page title for the browser tab / history entry (and, on the print
+// routes, the browser's own printed page header). The root layout's
+// metadata.title template turns this into "Order Board · Sui Dhaga".
+export const metadata: Metadata = { title: "Order Board" };
 
 // S4 Order Board (Step 15) — real data, replacing the Step 10 placeholder.
 // Three tabs (design brief §8): Due today / Overdue / Ready. Tab state
@@ -51,7 +66,10 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
   // Cheap counts for every tab up front — used both to pick a sensible
   // default tab and to show a count badge on each tab, without fetching
   // full row data for tabs that aren't even showing.
-  const [newCount, overdueCount, dueTodayCount, readyCount, outstandingCount, deliveredCount] = await Promise.all([
+  const [allCount, newCount, overdueCount, dueTodayCount, readyCount, outstandingCount, deliveredCount] = await Promise.all([
+    // No where-clause at all — this is the whole table, which is exactly
+    // what the "All" tab means.
+    prisma.order.count(),
     // Step 50 — exact same status/database value as everywhere else
     // (order-options.ts's OrderStatus enum) — no new status introduced.
     prisma.order.count({ where: { status: "NEW" } }),
@@ -83,7 +101,9 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
         : "ready";
 
   const where =
-    activeTab === "new"
+    activeTab === "all"
+      ? {}
+      : activeTab === "new"
       ? { status: "NEW" as const }
       : activeTab === "overdue"
         ? { deliveryDate: { lt: todayStart }, status: { not: "DELIVERED" as const } }
@@ -111,7 +131,9 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
   });
 
   const emptyTitle =
-    activeTab === "new"
+    activeTab === "all"
+      ? en.orderBoard.emptyAllTitle
+      : activeTab === "new"
       ? en.orderBoard.emptyNewTitle
       : activeTab === "overdue"
         ? en.orderBoard.emptyOverdueTitle
@@ -128,9 +150,10 @@ export default async function OrderBoardPage({ searchParams }: { searchParams: {
       <PageHeader title={en.nav.orderBoard} />
 
       <PageContainer size="xl">
-        <h1 className="text-xl font-semibold text-graphite">{en.nav.orderBoard}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-graphite">{en.nav.orderBoard}</h1>
 
         <div className="mt-4 flex flex-wrap gap-1.5 rounded-sm border border-rule bg-card p-1.5 shadow-sm">
+          <TabLink tab="all" activeTab={activeTab} label={en.orderBoard.tabAll} count={allCount} tone="neutral" />
           <TabLink tab="new" activeTab={activeTab} label={en.orderBoard.tabNew} count={newCount} tone="neutral" />
           <TabLink tab="overdue" activeTab={activeTab} label={en.search.overdue} count={overdueCount} tone="attention" />
           <TabLink tab="due-today" activeTab={activeTab} label={en.search.dueToday} count={dueTodayCount} tone="neutral" />
