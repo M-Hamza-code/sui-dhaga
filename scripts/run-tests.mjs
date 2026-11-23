@@ -59,10 +59,15 @@ if (testFiles.length === 0) {
   process.exit(1);
 }
 
+// Its own build-output directory (next.config.mjs reads NEXT_DIST_DIR),
+// separate from the real dev server's plain `.next` — two `next dev`
+// instances writing into the same folder at once corrupts its chunk
+// manifest and throws a ChunkLoadError in whichever one the browser is
+// pointed at. Confirmed to happen in practice, not just in theory.
 console.log(`Starting isolated test server on ${baseUrl} ...`);
 const server = spawn(`npx next dev -p ${port}`, {
   cwd: PROJECT_ROOT,
-  env: process.env,
+  env: { ...process.env, NEXT_DIST_DIR: ".next-test" },
   stdio: "inherit",
   shell: true,
 });
