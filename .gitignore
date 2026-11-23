@@ -3,6 +3,10 @@
 
 # next.js
 /.next/
+# Every isolated test build dir (NEXT_DIST_DIR in next.config.mjs): the
+# plain /.next-test/, plus the per-scenario ones like
+# .next-test-browser/ that a targeted test run creates.
+/.next-test*/
 /out/
 
 # production
