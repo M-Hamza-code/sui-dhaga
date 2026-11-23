@@ -67,6 +67,19 @@ async function main() {
     { code: "PATTI_C", label: "Fold Patti", sortOrder: 3 },
   ];
 
+  // Pancha Style — a STYLE choice for the shalwar cuff, distinct from the
+  // pre-existing numeric Measurement.pancha/MeasurementSnapshot.pancha
+  // (cuff width). No photos yet (real images to be provided later) — see
+  // order-options.ts's DESIGN_OPTION_IMAGES, which deliberately has no
+  // PANCHA_* entries yet; StyleTile/WorkOrderStyleBox already render a
+  // tile with just its label when imageSrc is undefined.
+  const panchaOptions = [
+    { code: "PANCHA_A", label: "Sada Pancha", sortOrder: 1 },
+    { code: "PANCHA_B", label: "Jaali Pancha", sortOrder: 2 },
+    { code: "PANCHA_C", label: "Kanta Pancha", sortOrder: 3 },
+    { code: "PANCHA_D", label: "Doora Pancha", sortOrder: 4 },
+  ];
+
   for (const option of pocketOptions) {
     await prisma.designOption.upsert({
       where: {
@@ -99,7 +112,25 @@ async function main() {
     });
   }
 
-  console.log(`✔ Seeded ${pocketOptions.length} Pocket options and ${pattiOptions.length} Patti Style options.`);
+  for (const option of panchaOptions) {
+    await prisma.designOption.upsert({
+      where: {
+        category_code: {
+          category: DesignOptionCategory.PANCHA,
+          code: option.code,
+        },
+      },
+      update: { label: option.label, sortOrder: option.sortOrder },
+      create: {
+        category: DesignOptionCategory.PANCHA,
+        ...option,
+      },
+    });
+  }
+
+  console.log(
+    `✔ Seeded ${pocketOptions.length} Pocket options, ${pattiOptions.length} Patti Style options, and ${panchaOptions.length} Pancha Style options.`
+  );
 }
 
 main()

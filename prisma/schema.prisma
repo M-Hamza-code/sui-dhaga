@@ -94,22 +94,72 @@ enum OrderStatus {
 enum DesignOptionCategory {
   POCKET
   PATTI
+  // Added for the Pancha STYLE choice (Sada/Jaali/Kanta/Doora Pancha) —
+  // not to be confused with Measurement.pancha / MeasurementSnapshot.pancha,
+  // the pre-existing NUMERIC shalwar-cuff-width field below. Same physical
+  // feature, two independent attributes (how wide it is vs. which pattern
+  // it's stitched in) — deliberately kept as two separate concepts, never
+  // merged.
+  PANCHA
+}
+
+// Which garment family a given Order (or, per-suit, a given OrderItem) is
+// for. KAMEEZ_SHALWAR is the original/only garment this app supported —
+// every existing Order is backfilled to it by the migration's column
+// default, which is correct (they all are Kameez/Shalwar orders). COAT
+// covers both Prince Coat and Waistcoat measurements together (one order
+// can capture both sets at once — see CoatMeasurement/MeasurementSnapshot's
+// own comments), never mixed with the Kameez/Shalwar fields.
+enum MeasurementMode {
+  KAMEEZ_SHALWAR
+  COAT
+}
+
+// Explicit per-entry Coat/Waistcoat garment selection — independent of
+// MeasurementMode above, which only ever marks WHICH POSITION RANGE an
+// OrderItem belongs to (Kameez vs Coat), never which garment(s) within a
+// Coat entry were actually ordered. Added because measurement-FIELD
+// CONTENT must never be used to infer pricing (a forgotten or mistyped
+// field could silently drop or misattribute a charge) — the admin makes
+// this choice explicitly instead. Only meaningful on an OrderItem whose
+// effective measurementMode is COAT; null on every Kameez/Shalwar item.
+enum CoatGarmentSelection {
+  PRINCE_COAT
+  WAISTCOAT
+  BOTH
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // Core models
 // ─────────────────────────────────────────────────────────────────────────
 
+// Backup/Restore needs an authorization tier distinct from plain
+// authentication (requireSession() only proves "a valid signed cookie",
+// never "allowed to restore the whole database" — see auth.ts's own
+// requireAdminSession()). Defaults to ADMIN, not STAFF: this app's own
+// session.ts describes its auth as "Sui Dhaga's single-admin auth" —
+// every user this app has ever created is the shop's one admin, there
+// is no staff-signup flow at all — so ADMIN is the correct default for
+// both the migration's backfill of the existing seeded user AND any
+// future row, not an arbitrary least-privilege guess.
+enum UserRole {
+  ADMIN
+  STAFF
+}
+
 model User {
   id           String   @id @default(cuid())
   name         String
   email        String   @unique
   passwordHash String
+  role         UserRole @default(ADMIN)
   createdAt    DateTime @default(now())
 
-  customersCreated   Customer[]    @relation("CustomerCreatedBy")
-  ordersCreated      Order[]       @relation("OrderCreatedBy")
-  measurementsEdited Measurement[] @relation("MeasurementUpdatedBy")
+  customersCreated       Customer[]        @relation("CustomerCreatedBy")
+  ordersCreated          Order[]           @relation("OrderCreatedBy")
+  measurementsEdited     Measurement[]     @relation("MeasurementUpdatedBy")
+  coatMeasurementsEdited CoatMeasurement[] @relation("CoatMeasurementUpdatedBy")
+  restoreAttempts        RestoreAttempt[]
 
   @@map("users")
 }
@@ -133,6 +183,11 @@ model Customer {
 
   // Exactly one measurement per customer — enforced by @unique on Measurement.customerId
   measurement Measurement?
+  // Exactly one Prince Coat/Waistcoat measurement profile per customer —
+  // independent of `measurement` above; a customer can have either, both,
+  // or neither. Same one-current-row-per-customer convention, enforced by
+  // @unique on CoatMeasurement.customerId.
+  coatMeasurement CoatMeasurement?
 
   // Unlimited independent orders per customer
   orders Order[]
@@ -156,10 +211,12 @@ model Measurement {
   chest    Decimal? @db.Decimal(6, 2)
   waist    Decimal? @db.Decimal(6, 2)
   hem      Decimal? @db.Decimal(6, 2) // گھیرا measurement value (distinct from Order.gheraType style)
+  armHole  Decimal? @db.Decimal(6, 2) // بازو کا گھیرا — added for the Kameez-fields upgrade; purely additive
+  kohni    Decimal? @db.Decimal(6, 2) // کہنی (elbow) — added for the Kameez-fields upgrade; purely additive
 
   // Shalwar
   shalwarLength     Decimal? @db.Decimal(6, 2)
-  pancha            Decimal? @db.Decimal(6, 2)
+  pancha            Decimal? @db.Decimal(6, 2) // NUMERIC shalwar-cuff width — distinct from the PANCHA design/style option below
   shalwarPocket     Boolean?
   shalwarGheraReady Decimal? @db.Decimal(6, 2)
 
@@ -173,6 +230,52 @@ model Measurement {
   @@map("measurements")
 }
 
+// Prince Coat + Waistcoat measurement profile — the Coat-mode equivalent of
+// Measurement above (same one-current-row-per-customer convention, same
+// upsert-in-place behavior via its own standalone edit page). Field names
+// are prefixed coat*/waistcoat* specifically so the two garments' same-named
+// measurements (e.g. "Shoulder" appears in both) are stored in distinct
+// columns and can never overwrite each other.
+model CoatMeasurement {
+  id         String   @id @default(cuid())
+  customerId String   @unique // enforces strict one-to-one with Customer
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  // Prince Coat
+  coatLength      Decimal? @db.Decimal(6, 2)
+  coatShoulder    Decimal? @db.Decimal(6, 2)
+  coatChest       Decimal? @db.Decimal(6, 2)
+  coatWaist       Decimal? @db.Decimal(6, 2)
+  coatHipSeat     Decimal? @db.Decimal(6, 2)
+  coatSleeve      Decimal? @db.Decimal(6, 2)
+  coatArmHole     Decimal? @db.Decimal(6, 2)
+  coatBicep       Decimal? @db.Decimal(6, 2)
+  coatCuff        Decimal? @db.Decimal(6, 2)
+  coatNeck        Decimal? @db.Decimal(6, 2)
+  coatBackWidth   Decimal? @db.Decimal(6, 2)
+  coatFrontLength Decimal? @db.Decimal(6, 2)
+
+  // Waistcoat
+  waistcoatLength      Decimal? @db.Decimal(6, 2)
+  waistcoatShoulder    Decimal? @db.Decimal(6, 2)
+  waistcoatChest       Decimal? @db.Decimal(6, 2)
+  waistcoatWaist       Decimal? @db.Decimal(6, 2)
+  waistcoatHipSeat     Decimal? @db.Decimal(6, 2)
+  waistcoatArmHole     Decimal? @db.Decimal(6, 2)
+  waistcoatNeck        Decimal? @db.Decimal(6, 2)
+  waistcoatBackWidth   Decimal? @db.Decimal(6, 2)
+  waistcoatFrontLength Decimal? @db.Decimal(6, 2)
+
+  note String?
+
+  updatedById String?
+  updatedBy   User?   @relation("CoatMeasurementUpdatedBy", fields: [updatedById], references: [id])
+
+  updatedAt DateTime @updatedAt
+
+  @@map("coat_measurements")
+}
+
 model Order {
   id          String   @id @default(cuid())
   orderNumber String   @unique // e.g. ORD-000045
@@ -182,27 +285,41 @@ model Order {
   orderDate    DateTime
   deliveryDate DateTime?
 
-  suitType SuitType
-  // Step 63 — Collar and Bain are now a single combined choice, not two
-  // independent required fields: exactly one of the two is ever set,
-  // never both, never neither (enforced in order-actions.ts's
-  // validateOrderInput — a plain scalar-column pair has no CHECK
-  // constraint mechanism in this schema style, so this is an
-  // application-level invariant, the same way balanceAmount is always
-  // server-computed rather than DB-constrained). Nullable so a genuinely
-  // unset choice is honestly representable, not faked with a hidden
-  // default — see order-form.tsx's own comment on why this couldn't be
-  // done as a pure UI-only change.
+  // Which measurement form this order's default block used — see
+  // MeasurementMode's own comment. Defaults every existing order to
+  // KAMEEZ_SHALWAR (correct: all pre-existing orders are Kameez/Shalwar).
+  measurementMode MeasurementMode @default(KAMEEZ_SHALWAR)
+
+  // suitType/cuffType/gheraType, and collarType/bainType below, are all
+  // nullable for the same reason: a Coat-mode order submits no Suit &
+  // Styles section at all, so none of the five can be unconditionally
+  // required any more. For a Kameez-mode order the admin can still
+  // explicitly leave any of them as "Not Specified" (a real, deliberate
+  // choice — see order-form.tsx's TileGroup `allowEmpty`), same as
+  // Collar/Bain already allowed before this change.
+  suitType SuitType?
+  // Step 63 — Collar and Bain are a single combined choice: exactly one of
+  // the two is ever set, never both, never neither, but ONLY when this
+  // order's measurementMode is KAMEEZ_SHALWAR — a Coat-mode order has
+  // neither set and that's not a validation error (enforced in
+  // order-actions.ts's validateOrderInput, conditional on measurementMode).
   collarType CollarType?
   bainType   BainType?
-  cuffType   CuffType
-  gheraType  GheraType
+  cuffType   CuffType?
+  gheraType  GheraType?
 
   pocketOptionId String?
   pocketOption   DesignOption? @relation("OrderPocketOption", fields: [pocketOptionId], references: [id])
 
   pattiOptionId String?
   pattiOption   DesignOption? @relation("OrderPattiOption", fields: [pattiOptionId], references: [id])
+
+  // Pancha Style — order-level only, same shape/pattern as pattiOptionId
+  // above (no per-suit override column on OrderItem, same reasoning as
+  // Patti's own comment). This is a STYLE choice (Sada/Jaali/Kanta/Doora
+  // Pancha), unrelated to Measurement.pancha (the numeric cuff-width value).
+  panchaOptionId String?
+  panchaOption   DesignOption? @relation("OrderPanchaOption", fields: [panchaOptionId], references: [id])
 
   // Step 9: the order's default measurement snapshot — an independent
   // frozen copy, not a link to the live Measurement row. Every OrderItem
@@ -222,6 +339,21 @@ model Order {
   // Always recalculated server-side as (totalAmount - advanceAmount).
   // Never accepted as direct user input — see /src/lib/money.ts (Step 2+).
   balanceAmount Decimal @default(0) @db.Decimal(10, 2)
+
+  // Upgrade — independent Kameez/Shalwar + Coat/Waistcoat order sections.
+  // The actual per-unit price used for this order's Coat/Waistcoat
+  // entries (quantity lives on the OrderItem rows themselves — count of
+  // items whose effective measurementMode is COAT), frozen at save time
+  // from Settings' configurable default (or the admin's own override for
+  // this order only) so a reprint later reflects what was actually
+  // charged, even if the Settings default changes afterward — same
+  // "snapshot, never silently re-derived" principle as
+  // MeasurementSnapshot. Null when this order has no Coat/Waistcoat
+  // entries at all. Kameez/Shalwar's own subtotal needs no equivalent
+  // column — it was never separately persisted either (just folded into
+  // totalAmount, same as always).
+  princeCoatUnitPrice Decimal? @db.Decimal(10, 2)
+  waistcoatUnitPrice  Decimal? @db.Decimal(10, 2)
 
   status OrderStatus @default(PENDING)
 
@@ -251,6 +383,7 @@ model DesignOption {
 
   pocketOrders     Order[]     @relation("OrderPocketOption")
   pattiOrders      Order[]     @relation("OrderPattiOption")
+  panchaOrders     Order[]     @relation("OrderPanchaOption")
   // Step 50 — per-suit pocket override (see OrderItem's own comment).
   itemPocketOrders OrderItem[] @relation("OrderItemPocketOption")
 
@@ -263,8 +396,9 @@ model DesignOption {
 // Step 9 additions — see the header comment for what this changes and why.
 // ─────────────────────────────────────────────────────────────────────────
 
-// An independent, frozen copy of the 11 measurement values as they stood
+// An independent, frozen copy of the 13 measurement values as they stood
 // at the moment an order (or one specific suit within it) was saved.
+// (armHole/kohni added later — originally 11.)
 // Deliberately has NO foreign key back to Measurement — once written, a
 // snapshot is never updated, including when the customer's live/current
 // Measurement later changes. Reused for two distinct purposes (see Order
@@ -283,12 +417,43 @@ model MeasurementSnapshot {
   chest    Decimal? @db.Decimal(6, 2)
   waist    Decimal? @db.Decimal(6, 2)
   hem      Decimal? @db.Decimal(6, 2)
+  armHole  Decimal? @db.Decimal(6, 2)
+  kohni    Decimal? @db.Decimal(6, 2)
 
   // Shalwar
   shalwarLength     Decimal? @db.Decimal(6, 2)
-  pancha            Decimal? @db.Decimal(6, 2)
+  pancha            Decimal? @db.Decimal(6, 2) // NUMERIC shalwar-cuff width — distinct from Order.panchaOption (the style choice)
   shalwarPocket     Boolean?
   shalwarGheraReady Decimal? @db.Decimal(6, 2)
+
+  // Prince Coat + Waistcoat — same duplicated-not-referenced reasoning as
+  // the Kameez/Shalwar fields above, mirroring CoatMeasurement's own field
+  // list exactly. Populated only when the owning Order/OrderItem's
+  // measurementMode is COAT; left null for every KAMEEZ_SHALWAR snapshot
+  // (and vice versa for the Kameez/Shalwar fields above on a COAT
+  // snapshot) — the two groups are never both populated on the same row.
+  coatLength      Decimal? @db.Decimal(6, 2)
+  coatShoulder    Decimal? @db.Decimal(6, 2)
+  coatChest       Decimal? @db.Decimal(6, 2)
+  coatWaist       Decimal? @db.Decimal(6, 2)
+  coatHipSeat     Decimal? @db.Decimal(6, 2)
+  coatSleeve      Decimal? @db.Decimal(6, 2)
+  coatArmHole     Decimal? @db.Decimal(6, 2)
+  coatBicep       Decimal? @db.Decimal(6, 2)
+  coatCuff        Decimal? @db.Decimal(6, 2)
+  coatNeck        Decimal? @db.Decimal(6, 2)
+  coatBackWidth   Decimal? @db.Decimal(6, 2)
+  coatFrontLength Decimal? @db.Decimal(6, 2)
+
+  waistcoatLength      Decimal? @db.Decimal(6, 2)
+  waistcoatShoulder    Decimal? @db.Decimal(6, 2)
+  waistcoatChest       Decimal? @db.Decimal(6, 2)
+  waistcoatWaist       Decimal? @db.Decimal(6, 2)
+  waistcoatHipSeat     Decimal? @db.Decimal(6, 2)
+  waistcoatArmHole     Decimal? @db.Decimal(6, 2)
+  waistcoatNeck        Decimal? @db.Decimal(6, 2)
+  waistcoatBackWidth   Decimal? @db.Decimal(6, 2)
+  waistcoatFrontLength Decimal? @db.Decimal(6, 2)
 
   note String?
 
@@ -351,6 +516,23 @@ model OrderItem {
   cuffType   CuffType?
   gheraType  GheraType?
 
+  // null = this suit uses Order.measurementMode (true for every suit in
+  // the overwhelming majority of orders). Set only when a specific suit
+  // within a multi-suit order is deliberately a different garment family
+  // from the order's own default — e.g. one Kameez/Shalwar suit and one
+  // Coat suit in the same order.
+  measurementMode MeasurementMode?
+
+  // Explicit admin-chosen garment(s) for a COAT-mode item — see
+  // CoatGarmentSelection's own comment. Only meaningful when this item's
+  // effective measurementMode is COAT; always null for a Kameez/Shalwar
+  // item. NULL on a COAT item means "no explicit selection was ever
+  // recorded" — true for every Coat item created before this field
+  // existed — and must be interpreted as BOTH for backward compatibility
+  // (that was the only behavior possible before this field existed), not
+  // re-derived from measurement content and never backfilled in bulk.
+  coatGarmentSelection CoatGarmentSelection?
+
   pocketOptionId String?
   pocketOption   DesignOption? @relation("OrderItemPocketOption", fields: [pocketOptionId], references: [id])
 
@@ -386,7 +568,87 @@ model ShopSettings {
   // Decimal, not Int/Float, so it can hold e.g. 50.00 without rounding.
   defaultAdvancePercent Decimal? @db.Decimal(5, 2)
 
+  // Backup/Restore — bumped by 1 every time a restore (Operation A or B)
+  // completes. Offline devices compare this against their own last-seen
+  // value (syncMeta) on every initial sync pull; a mismatch is the
+  // signal that this device's pending queue was computed against data
+  // that may no longer reflect reality, used specifically to force
+  // manual reconfirmation of any still-pending DELETE_ORDER item (see
+  // initial-sync.ts) — ordinary UPDATE_*/CREATE_* ops are already
+  // protected by their own existing version/existence guards regardless
+  // of this counter.
+  restoreGeneration Int @default(0)
+
   updatedAt DateTime @updatedAt
 
   @@map("shop_settings")
+}
+
+// Backup/Restore — one row per restore attempt (upload through
+// completion or failure), independent of ShopSettings.restoreGeneration
+// itself (that counter only reflects completed restores; this table is
+// the audit trail for every attempt, including ones that never
+// completed). See src/lib/restore/ for the actual engine.
+enum RestoreAttemptStatus {
+  PENDING // uploaded, not yet validated
+  VALIDATING
+  AWAITING_RESOLUTION // Operation B conflicts exist and need an explicit admin decision per record
+  APPLYING
+  COMPLETED
+  FAILED
+  ABORTED
+}
+
+model RestoreAttempt {
+  id            String               @id @default(cuid())
+  status        RestoreAttemptStatus @default(PENDING)
+  initiatedById String?
+  initiatedBy   User?                @relation(fields: [initiatedById], references: [id])
+
+  // Parsed straight from the uploaded backup's own envelope — see
+  // generateFullBackup()'s BACKUP_FORMAT/BACKUP_VERSION.
+  backupFormat    String?
+  backupVersion   Int?
+  backupCreatedAt DateTime?
+  checksum        String? // sha256 of the uploaded file's exact bytes
+  recordCounts    Json? // per-model row counts as found in the uploaded backup
+
+  // Path to the pre-restore safety backup taken before ANY write of this
+  // attempt — see restore-apply.ts. Null only if this attempt never
+  // reached the apply step (e.g. validation failed first).
+  safetyBackupPath String?
+
+  // Operation A import counts, Operation B conflict list + per-record
+  // resolutions, and any quarantined records — the full audit trail of
+  // what this attempt actually did, not just whether it succeeded.
+  summary Json?
+
+  errorMessage String?
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@map("restore_attempts")
+}
+
+// Offline-sync idempotency receipt — UPDATE_ORDER only (see
+// src/lib/order-update.ts). Order updates write to Order's own scalars,
+// a brand-new MeasurementSnapshot, and the OrderItem rows in one
+// transaction — comparing Order's scalars alone after a retried request
+// cannot tell "already applied" from "a different request coincidentally
+// produced the same scalars with different items", so a dedicated
+// receipt bound to the exact request (payloadHash) is needed instead.
+// No other sync op needs this: User/MeasurementSnapshot have no update
+// path at all, and every other op's "already applied?" question is
+// answerable from its own single-row scalar comparison.
+model SyncOperationReceipt {
+  id              String   @id @default(cuid())
+  operationId     String   @unique
+  operationType   String
+  targetId        String
+  payloadHash     String
+  resultUpdatedAt DateTime
+  createdAt       DateTime @default(now())
+
+  @@map("sync_operation_receipts")
 }
