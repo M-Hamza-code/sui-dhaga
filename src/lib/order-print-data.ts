@@ -5,6 +5,7 @@
 // already uses, and the same shop-settings row, so that logic lives in
 // one place instead of two copies that could quietly drift apart.
 import { prisma } from "@/lib/prisma";
+import { hasKameezMeasurementData, hasPrinceCoatMeasurementData, hasWaistcoatMeasurementData } from "@/lib/garment-ordered";
 
 export async function getOrderPrintData(customerId: string, orderId: string) {
   const order = await prisma.order.findUnique({
@@ -13,6 +14,7 @@ export async function getOrderPrintData(customerId: string, orderId: string) {
       customer: true,
       pocketOption: true,
       pattiOption: true,
+      panchaOption: true,
       defaultMeasurementSnapshot: true,
       // Step 50 — pocketOption added so a per-suit pocket override (see
       // OrderItem's own schema comment) can be resolved below without a
@@ -58,27 +60,67 @@ export async function getOrderPrintData(customerId: string, orderId: string) {
   // none of these columns set) inherits the order's own style. Position 1
   // never has its own override (see OrderItem's schema comment) so it
   // always falls into the "inherit" branch here.
+  // "Only bill/show garments actually ordered" — the three new
+  // hasKameezData/hasPrinceCoatData/hasWaistcoatData flags below answer
+  // a purely DISPLAY/BILLING question on top of the already-resolved
+  // `snapshot` above: does this position's effective measurement data
+  // actually have anything in it for the garment(s) it's structurally
+  // for. See garment-ordered.ts's own comment — structure (position
+  // count, measurementMode, coatGarmentSelection) is never touched by
+  // this; a position with zero real data still exists as a row exactly
+  // as submitted, it just doesn't count as "ordered" for pricing/Receipt/
+  // Work Order purposes. hasKameezData also counts a selected Suit Type
+  // as "ordered" (Kameez/Shalwar has always been priced by Suit Type,
+  // never by measurements — see computeKameezTotal's own comment) —
+  // hasPrinceCoatData/hasWaistcoatData have no such style signal, so
+  // they're measurement-only, exactly as approved.
   const suits =
     order.items.length > 0
-      ? order.items.map((item) => ({
-          position: item.position,
-          isOverride: item.measurementSnapshot !== null,
-          snapshot: item.measurementSnapshot ?? order.defaultMeasurementSnapshot,
-          isStyleOverride: item.suitType !== null,
-          style: {
-            suitType: item.suitType ?? order.suitType,
-            collarType: item.collarType ?? order.collarType,
-            bainType: item.bainType ?? order.bainType,
-            cuffType: item.cuffType ?? order.cuffType,
-            gheraType: item.gheraType ?? order.gheraType,
-            pocketOption: item.suitType !== null ? item.pocketOption : order.pocketOption,
-          },
-        }))
+      ? order.items.map((item) => {
+          const snapshot = item.measurementSnapshot ?? order.defaultMeasurementSnapshot;
+          const measurementMode = item.measurementMode ?? order.measurementMode;
+          const suitType = item.suitType ?? order.suitType;
+          return {
+            position: item.position,
+            isOverride: item.measurementSnapshot !== null,
+            snapshot,
+            // "Ideally, an order should also support both garment types" —
+            // same inherit-unless-set rule as every other per-suit field
+            // above/below: null on the OrderItem means "same mode as the
+            // order" (always true for position 1, and for every pre-upgrade
+            // order's items, which have no measurementMode column value).
+            measurementMode,
+            // Explicit admin-chosen Coat/Waistcoat garment selection — only
+            // meaningful when this item's effective measurementMode is
+            // COAT. NULL (every Coat item saved before this field existed)
+            // must be interpreted as BOTH for backward compatibility — see
+            // OrderItem.coatGarmentSelection's own schema.prisma comment —
+            // never re-derived from measurement content.
+            coatGarmentSelection: item.coatGarmentSelection ?? "BOTH",
+            hasKameezData: suitType !== null || hasKameezMeasurementData(snapshot),
+            hasPrinceCoatData: hasPrinceCoatMeasurementData(snapshot),
+            hasWaistcoatData: hasWaistcoatMeasurementData(snapshot),
+            isStyleOverride: item.suitType !== null,
+            style: {
+              suitType,
+              collarType: item.collarType ?? order.collarType,
+              bainType: item.bainType ?? order.bainType,
+              cuffType: item.cuffType ?? order.cuffType,
+              gheraType: item.gheraType ?? order.gheraType,
+              pocketOption: item.suitType !== null ? item.pocketOption : order.pocketOption,
+            },
+          };
+        })
       : [
           {
             position: 1,
             isOverride: false,
             snapshot: order.defaultMeasurementSnapshot,
+            measurementMode: order.measurementMode,
+            coatGarmentSelection: "BOTH" as const,
+            hasKameezData: order.suitType !== null || hasKameezMeasurementData(order.defaultMeasurementSnapshot),
+            hasPrinceCoatData: hasPrinceCoatMeasurementData(order.defaultMeasurementSnapshot),
+            hasWaistcoatData: hasWaistcoatMeasurementData(order.defaultMeasurementSnapshot),
             isStyleOverride: false,
             style: {
               suitType: order.suitType,

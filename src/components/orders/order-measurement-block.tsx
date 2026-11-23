@@ -1,21 +1,22 @@
 "use client";
 
 // Embeddable measurement input block for the S3 Order form (Step 14).
-// Reuses the exact Step 13 logic modules — fractions.ts's glyph
-// conversion and measurement-fields.ts's field list/Urdu labels — but is
-// its own component rather than measurement-form.tsx itself, because the
-// order form embeds this block more than once per page (the order-level
+// Reuses measurement-fields.ts's field list/Urdu labels, and
+// MeasurementDecimalField (the shared text-input + app-styled-dropdown
+// control, Upgrade 1 — see that component's own comment for why it's
+// neither a native <select> nor a native <datalist>), but is its own
+// component rather than measurement-form.tsx itself, because the order
+// form embeds this block more than once per page (the order-level
 // default, plus one per suit that has "different measurements for this
 // suit" turned on) with independently scoped Enter/Tab sequences, where
-// measurement-form.tsx is a single full-page form tied to one Measurement
-// row. The submitted contract is identical either way: a visible
-// fraction-glyph display input paired with a hidden plain-decimal input
-// carrying the real `name` — order-actions.ts's readMeasurementBlock()
-// only ever sees a plain decimal string, never a fraction glyph.
+// measurement-form.tsx is a single full-page form tied to one
+// Measurement row. Each field's own value IS the plain decimal string
+// submitted under its real `name` — order-actions.ts's
+// readMeasurementBlock() only ever sees a plain decimal string.
 
 import { useEffect } from "react";
-import { toFractionDisplay, fractionDisplayToDecimal } from "@/lib/fractions";
 import { KAMEEZ_FIELDS, SHALWAR_DECIMAL_FIELDS, SHALWAR_POCKET_FIELD } from "@/lib/measurement-fields";
+import { MeasurementDecimalField } from "@/components/measurement/measurement-decimal-field";
 import { en } from "@/lib/locale";
 
 const SHALWAR_LENGTH = findField("shalwarLength");
@@ -29,8 +30,6 @@ const SEQUENCE: string[] = [
   SHALWAR_POCKET_FIELD.key,
   SHALWAR_GHERA_READY.key,
 ];
-
-const FRACTION_KEYS = ["½", "¼", "¾"] as const;
 
 function findField(key: string) {
   const field = SHALWAR_DECIMAL_FIELDS.find((f) => f.key === key);
@@ -47,7 +46,7 @@ export function emptyMeasurementBlockValues(): MeasurementBlockValues {
   return values;
 }
 
-/** Pre-fills from a Measurement-shaped record (or null), display values as fraction glyphs — same rule Step 13's form uses. */
+/** Pre-fills from a Measurement-shaped record (or null) — plain decimal strings (Upgrade 1: no more fraction-glyph display format; see measurement-form.tsx's own comment on the same change). */
 export function measurementBlockValuesFrom(source: Record<string, unknown> | null | undefined): MeasurementBlockValues {
   const values: MeasurementBlockValues = {};
   for (const key of SEQUENCE) {
@@ -56,7 +55,7 @@ export function measurementBlockValuesFrom(source: Record<string, unknown> | nul
       values[key] = raw === true ? "yes" : raw === false ? "no" : "";
     } else {
       const raw = source ? source[key] : null;
-      values[key] = toFractionDisplay(raw == null ? null : String(raw));
+      values[key] = raw == null ? "" : String(raw);
     }
   }
   return values;
@@ -79,7 +78,7 @@ export function OrderMeasurementBlock({
   /** Form field name prefix, e.g. "default" or "item.2" — matches order-actions.ts's readMeasurementBlock(). */
   namePrefix: string;
   values: MeasurementBlockValues;
-  onChange: (key: string, displayValue: string) => void;
+  onChange: (key: string, value: string) => void;
   /** Baseline to compare against for the amber "changed" highlight — omit for a block with nothing to compare to (a fresh per-suit override). */
   originalValues?: MeasurementBlockValues;
   activeField: string;
@@ -103,14 +102,6 @@ export function OrderMeasurementBlock({
     if (!next) return;
     focusField(next);
     onActiveFieldChange(next);
-  }
-
-  function applyFraction(glyph: string) {
-    if (activeField === SHALWAR_POCKET_FIELD.key) return;
-    const current = values[activeField] ?? "";
-    const withoutFraction = current.replace(/[½¼¾]/g, "");
-    onChange(activeField, withoutFraction + glyph);
-    focusField(activeField);
   }
 
   function isChanged(key: string): boolean {
@@ -171,21 +162,6 @@ export function OrderMeasurementBlock({
               isChanged={isChanged}
             />
           </div>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-rule pt-3">
-          {FRACTION_KEYS.map((glyph) => (
-            <button
-              key={glyph}
-              type="button"
-              disabled={activeField === SHALWAR_POCKET_FIELD.key}
-              onClick={() => applyFraction(glyph)}
-              className="h-8 w-10 rounded-sm border border-rule bg-paper text-base text-indigo transition hover:bg-card disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {glyph}
-            </button>
-          ))}
-          <span className="text-xs text-graphite/50">{en.measurementForm.fractionHint}</span>
         </div>
 
         {onNoteChange && (
@@ -334,8 +310,6 @@ function DecimalRow({
   onChange: (value: string) => void;
   onEnter: () => void;
 }) {
-  const decimalValue = fractionDisplayToDecimal(value);
-
   return (
     <div
       className={`flex items-center gap-2 rounded-sm px-2 py-1.5 transition-colors ${isActive ? "bg-paper" : ""}`}
@@ -346,27 +320,20 @@ function DecimalRow({
       </span>
       <span className="hidden text-[10px] uppercase tracking-wide text-graphite/40 sm:inline">{label}</span>
       <span className="flex-1" />
-      <input
-        type="text"
-        inputMode="decimal"
-        data-mkey={fieldKey}
+      <MeasurementDecimalField
+        fieldKey={fieldKey}
+        name={`${namePrefix}.${fieldKey}`}
         value={value}
+        placeholder={en.measurementForm.notSpecified}
         onFocus={onFocus}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            onEnter();
-          }
-        }}
+        onChange={onChange}
+        onEnter={onEnter}
         className={`w-20 rounded-sm border px-2 py-1 text-right text-lg tabular-nums focus:outline-none ${
           isChanged
             ? "border-amber bg-amber/10 font-semibold text-amber"
             : "border-rule bg-card text-graphite focus:border-indigo"
         }`}
       />
-      {/* Only field actually submitted — always a plain decimal string. */}
-      <input type="hidden" name={`${namePrefix}.${fieldKey}`} value={decimalValue} />
     </div>
   );
 }

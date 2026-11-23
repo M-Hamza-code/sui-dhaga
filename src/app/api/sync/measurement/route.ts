@@ -16,6 +16,8 @@ interface MeasurementSyncBody {
   length?: unknown;
   shoulder?: unknown;
   sleeve?: unknown;
+  armHole?: unknown;
+  kohni?: unknown;
   neck?: unknown;
   chest?: unknown;
   waist?: unknown;

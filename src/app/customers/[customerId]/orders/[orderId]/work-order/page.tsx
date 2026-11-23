@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { getOrderPrintData, type OrderPrintData, type OrderPrintSuit } from "@/lib/order-print-data";
+import { includesPrinceCoat, includesWaistcoat } from "@/lib/coat-garment-selection";
 import { PrintPreviewShell } from "@/components/print/print-preview-shell";
 import { MeasurementSnapshotPrintGrid } from "@/components/print/measurement-snapshot-print-grid";
 import { WorkOrderStyleBox } from "@/components/print/work-order-style-box";
@@ -82,11 +83,23 @@ export default async function WorkOrderPage({
   // own schema comment), so every suit's box for it is the same value,
   // read from `order.pattiOption` rather than `suit.style`.
   function styleBoxesForSuit(suit: OrderPrintSuit): { label: string; imageSrc?: string }[] {
-    const boxes: { label: string; imageSrc?: string }[] = [
-      { label: SUIT_TYPE_UR[suit.style.suitType], imageSrc: SUIT_TYPE_IMAGES[suit.style.suitType] },
-      { label: CUFF_TYPE_UR[suit.style.cuffType], imageSrc: CUFF_TYPE_IMAGES[suit.style.cuffType] },
-      { label: GHERA_TYPE_UR[suit.style.gheraType], imageSrc: GHERA_TYPE_IMAGES[suit.style.gheraType] },
-    ];
+    // A Coat-mode suit has no Suit & Styles selections at all — same rule
+    // the order form itself follows (none of these fields are ever
+    // submitted for one).
+    if (suit.measurementMode === "COAT") return [];
+    const boxes: { label: string; imageSrc?: string }[] = [];
+    // Upgrade — Suit Type/Cuff/Ghera can now each independently be "Not
+    // Specified" (null), same conditional-box treatment Collar/Bain/
+    // Pocket/Patti/Pancha already use just below.
+    if (suit.style.suitType) {
+      boxes.push({ label: SUIT_TYPE_UR[suit.style.suitType], imageSrc: SUIT_TYPE_IMAGES[suit.style.suitType] });
+    }
+    if (suit.style.cuffType) {
+      boxes.push({ label: CUFF_TYPE_UR[suit.style.cuffType], imageSrc: CUFF_TYPE_IMAGES[suit.style.cuffType] });
+    }
+    if (suit.style.gheraType) {
+      boxes.push({ label: GHERA_TYPE_UR[suit.style.gheraType], imageSrc: GHERA_TYPE_IMAGES[suit.style.gheraType] });
+    }
     // Step 63 — Collar and Bain are now a single combined choice
     // (exactly one set, never both, never neither) — each box only
     // prints when that field actually has a value, the same conditional
@@ -105,18 +118,42 @@ export default async function WorkOrderPage({
     if (order.pattiOption) {
       boxes.push({ label: order.pattiOption.label, imageSrc: DESIGN_OPTION_IMAGES[order.pattiOption.code] });
     }
+    // Pancha Style — same order-level-only shape as Patti above (no
+    // per-suit override), no confirmed images yet either (real photos to
+    // be provided later) — imageSrc is simply undefined until
+    // DESIGN_OPTION_IMAGES gains PANCHA_* entries, same honest-placeholder
+    // rendering Pocket/Patti already use.
+    if (order.panchaOption) {
+      boxes.push({ label: order.panchaOption.label, imageSrc: DESIGN_OPTION_IMAGES[order.panchaOption.code] });
+    }
     return boxes;
   }
 
   const deliveryDateText = order.deliveryDate ? formatDateNumeric(order.deliveryDate) : "—";
+
+  // "Only show garments actually ordered" — a suit whose tab was merely
+  // opened (defaulting its quantity to 1) but never actually filled in
+  // has nothing for the Karigar to stitch, so it's dropped entirely
+  // before pairing sheets, same hasKameezData/hasPrinceCoatData/
+  // hasWaistcoatData flags Receipt/Order Detail use (see
+  // garment-ordered.ts's own comment). Structure elsewhere (position
+  // numbers, OrderItem rows) is completely unaffected — this is a
+  // display-only filter on the array this page prints from.
+  const orderedSuits = suits.filter((suit) => {
+    if (suit.measurementMode === "COAT") {
+      return (includesPrinceCoat(suit.coatGarmentSelection) && suit.hasPrinceCoatData) ||
+        (includesWaistcoat(suit.coatGarmentSelection) && suit.hasWaistcoatData);
+    }
+    return suit.hasKameezData;
+  });
 
   // Two suits per physical sheet (left = odd position, right = even) —
   // grouping whole suits only. A suit's own content is never split
   // across sheets, and an odd suit count's trailing right half is simply
   // left empty rather than stretching or repeating a suit.
   const sheets: [OrderPrintSuit, OrderPrintSuit | null][] = [];
-  for (let i = 0; i < suits.length; i += 2) {
-    sheets.push([suits[i], suits[i + 1] ?? null]);
+  for (let i = 0; i < orderedSuits.length; i += 2) {
+    sheets.push([orderedSuits[i], orderedSuits[i + 1] ?? null]);
   }
 
   return (
@@ -173,7 +210,14 @@ export default async function WorkOrderPage({
                 : "mx-auto grid max-w-[456px] grid-cols-1 print:mx-0 print:max-w-none print:grid-cols-2"
             } ${sheetIndex < sheets.length - 1 ? "print:break-after-page" : ""}`}
           >
-            <WorkOrderHalf order={order} suit={pair[0]} totalSuits={suits.length} styleBoxes={styleBoxesForSuit(pair[0])} deliveryDateText={deliveryDateText} />
+            <WorkOrderHalf
+              order={order}
+              suit={pair[0]}
+              displayPosition={sheetIndex * 2 + 1}
+              totalSuits={orderedSuits.length}
+              styleBoxes={styleBoxesForSuit(pair[0])}
+              deliveryDateText={deliveryDateText}
+            />
 
             {/* The dashed edge here IS the cut/fold guide (design brief
                 §7a) — a plain print-safe border, not application content,
@@ -185,7 +229,14 @@ export default async function WorkOrderPage({
                 still exactly what's wanted. */}
             <div className={`border-l border-dashed border-graphite/40 print:border-black ${pair[1] ? "" : "hidden print:block"}`}>
               {pair[1] && (
-                <WorkOrderHalf order={order} suit={pair[1]} totalSuits={suits.length} styleBoxes={styleBoxesForSuit(pair[1])} deliveryDateText={deliveryDateText} />
+                <WorkOrderHalf
+                  order={order}
+                  suit={pair[1]}
+                  displayPosition={sheetIndex * 2 + 2}
+                  totalSuits={orderedSuits.length}
+                  styleBoxes={styleBoxesForSuit(pair[1])}
+                  deliveryDateText={deliveryDateText}
+                />
               )}
             </div>
           </div>
@@ -198,12 +249,15 @@ export default async function WorkOrderPage({
 function WorkOrderHalf({
   order,
   suit,
+  displayPosition,
   totalSuits,
   styleBoxes,
   deliveryDateText,
 }: {
   order: OrderPrintData["order"];
   suit: OrderPrintSuit;
+  /** 1-based position within the PRINTED (ordered-only) suits, for the "Suit X of Y" label — never suit.position itself, which is the structural position and may skip numbers once unordered suits are filtered out above. */
+  displayPosition: number;
   totalSuits: number;
   styleBoxes: { label: string; imageSrc?: string }[];
   deliveryDateText: string;
@@ -217,13 +271,13 @@ function WorkOrderHalf({
           <div dir="ltr" className="text-5xl font-bold leading-none tabular-nums text-graphite print:text-black">
             {formatOrderNumber(order.orderNumber)}
           </div>
-          <div className="mt-1 font-nastaliq text-sm text-graphite print:text-black">{suitOfTotalUr(suit.position, totalSuits)}</div>
+          <div className="mt-1 font-nastaliq text-sm text-graphite print:text-black">{suitOfTotalUr(displayPosition, totalSuits)}</div>
         </div>
         <div className="font-nastaliq text-lg leading-relaxed text-graphite print:text-black">{en.app.nameUrdu}</div>
       </div>
 
       <div className="mt-3">
-        <MeasurementSnapshotPrintGrid snapshot={suit.snapshot} />
+        <MeasurementSnapshotPrintGrid snapshot={suit.snapshot} mode={suit.measurementMode} coatGarmentSelection={suit.coatGarmentSelection} />
       </div>
 
       {styleBoxes.length > 0 && (

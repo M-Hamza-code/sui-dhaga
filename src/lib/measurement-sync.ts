@@ -43,6 +43,8 @@ export async function applyMeasurementSync(input: {
   length?: unknown;
   shoulder?: unknown;
   sleeve?: unknown;
+  armHole?: unknown;
+  kohni?: unknown;
   neck?: unknown;
   chest?: unknown;
   waist?: unknown;
@@ -63,6 +65,8 @@ export async function applyMeasurementSync(input: {
     length: input.length || undefined,
     shoulder: input.shoulder || undefined,
     sleeve: input.sleeve || undefined,
+    armHole: input.armHole || undefined,
+    kohni: input.kohni || undefined,
     neck: input.neck || undefined,
     chest: input.chest || undefined,
     waist: input.waist || undefined,
@@ -85,6 +89,8 @@ export async function applyMeasurementSync(input: {
     length: data.length ?? null,
     shoulder: data.shoulder ?? null,
     sleeve: data.sleeve ?? null,
+    armHole: data.armHole ?? null,
+    kohni: data.kohni ?? null,
     neck: data.neck ?? null,
     chest: data.chest ?? null,
     waist: data.waist ?? null,

@@ -53,6 +53,14 @@ export interface PrefillMeasurement {
   length: Measurement["length"];
   shoulder: Measurement["shoulder"];
   sleeve: Measurement["sleeve"];
+  // armHole/kohni were added to KAMEEZ_FIELDS (measurement-fields.ts)
+  // after this interface and fromSnapshot() below were first written,
+  // and were never added here — the exact bug that made them silently
+  // render blank on Edit Order and on new-order prefill (both read
+  // through fromSnapshot(), never through this interface's absence
+  // directly) even though the real columns were always saved correctly.
+  armHole: Measurement["armHole"];
+  kohni: Measurement["kohni"];
   neck: Measurement["neck"];
   chest: Measurement["chest"];
   waist: Measurement["waist"];
@@ -75,6 +83,8 @@ export function fromSnapshot(snapshot: MeasurementSnapshot): PrefillMeasurement 
     length: snapshot.length,
     shoulder: snapshot.shoulder,
     sleeve: snapshot.sleeve,
+    armHole: snapshot.armHole,
+    kohni: snapshot.kohni,
     neck: snapshot.neck,
     chest: snapshot.chest,
     waist: snapshot.waist,

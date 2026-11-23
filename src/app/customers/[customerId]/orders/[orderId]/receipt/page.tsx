@@ -28,6 +28,51 @@ export default async function ReceiptPage({
   const customer = order.customer;
   const orderHref = `/customers/${customer.id}/orders/${order.id}`;
 
+  // Requirement 6 — Receipt gets the same Prince Coat/Waistcoat pricing
+  // breakdown (garment, quantity, unit price, subtotal) the Order Detail
+  // page already shows, using each Coat-mode suit's own explicit,
+  // persisted garmentSelection (getOrderPrintData() already resolves a
+  // legacy NULL to "BOTH"). The Work Order deliberately keeps its own
+  // existing "no money anywhere on this sheet" rule untouched (see that
+  // page's own comment) — this breakdown is Receipt-only.
+  //
+  // "Only bill for garments actually ordered" — a suit only counts
+  // toward a garment's quantity if it's BOTH structurally that garment
+  // (coatGarmentSelection includes it) AND actually has real measurement
+  // data for it (hasPrinceCoatData/hasWaistcoatData, from
+  // getOrderPrintData()'s own resolution — see garment-ordered.ts). A
+  // Coat tab that was opened (defaulting its quantity to 1) but never
+  // filled in contributes to neither.
+  let princeCoatQuantity = 0;
+  let waistcoatQuantity = 0;
+  for (const suit of suits) {
+    if (suit.measurementMode !== "COAT") continue;
+    if ((suit.coatGarmentSelection === "PRINCE_COAT" || suit.coatGarmentSelection === "BOTH") && suit.hasPrinceCoatData) princeCoatQuantity++;
+    if ((suit.coatGarmentSelection === "WAISTCOAT" || suit.coatGarmentSelection === "BOTH") && suit.hasWaistcoatData) waistcoatQuantity++;
+  }
+  const princeCoatTotal = princeCoatQuantity > 0 && order.princeCoatUnitPrice ? Number(order.princeCoatUnitPrice) * princeCoatQuantity : null;
+  const waistcoatTotal = waistcoatQuantity > 0 && order.waistcoatUnitPrice ? Number(order.waistcoatUnitPrice) * waistcoatQuantity : null;
+  // Same rule applied to Kameez/Shalwar — true only if at least one
+  // Kameez-mode suit is actually ordered (Suit Type selected or
+  // measurements entered — see hasKameezData's own comment).
+  const kameezOrdered = suits.some((suit) => suit.measurementMode !== "COAT" && suit.hasKameezData);
+
+  // Order Type Selection upgrade — a mixed order (Kameez/Shalwar AND
+  // Coat/Waistcoat together) now also gets its own itemized
+  // Kameez/Shalwar line, computed as "whatever portion of the already-
+  // frozen Total isn't accounted for by the already-frozen Prince
+  // Coat/Waistcoat amounts" — never from the shop's CURRENT default
+  // suit-type prices (which, unlike princeCoatUnitPrice/waistcoatUnitPrice,
+  // were never frozen onto the order and could have changed since this
+  // order was placed). This keeps historical reprints exactly accurate
+  // using only figures already saved on this order, and the three rows
+  // always sum to the same real Total/Balance shown below. A Kameez-only
+  // order (no Coat entries at all) is unaffected — it keeps showing just
+  // the single combined Total it always has, with no new line.
+  const hasCoatEntries = princeCoatQuantity > 0 || waistcoatQuantity > 0;
+  const kameezShalwarTotal =
+    hasCoatEntries && kameezOrdered ? Number(order.totalAmount) - (princeCoatTotal ?? 0) - (waistcoatTotal ?? 0) : null;
+
   return (
     <PrintPreviewShell
       headerTitle={en.print.receipt.pageTitle}
@@ -73,6 +118,26 @@ export default async function ReceiptPage({
           }
         />
       </dl>
+
+      {hasCoatEntries && (
+        <dl className="mt-4 space-y-1.5 border-t border-rule pt-4 text-sm print:border-black">
+          {kameezShalwarTotal !== null && (
+            <Row label={en.orderForm.kameezShalwarTotal} value={formatMoney(kameezShalwarTotal)} />
+          )}
+          {princeCoatQuantity > 0 && (
+            <Row
+              label={`${en.orderForm.princeCoatTotal} (${princeCoatQuantity} × Rs. ${order.princeCoatUnitPrice?.toFixed(2) ?? "—"})`}
+              value={princeCoatTotal !== null ? formatMoney(princeCoatTotal) : "—"}
+            />
+          )}
+          {waistcoatQuantity > 0 && (
+            <Row
+              label={`${en.orderForm.waistcoatTotal} (${waistcoatQuantity} × Rs. ${order.waistcoatUnitPrice?.toFixed(2) ?? "—"})`}
+              value={waistcoatTotal !== null ? formatMoney(waistcoatTotal) : "—"}
+            />
+          )}
+        </dl>
+      )}
 
       <dl className="mt-5 space-y-1.5 border-t border-rule pt-4 text-sm print:border-black">
         <Row label={en.print.receipt.total} value={formatMoney(order.totalAmount)} />

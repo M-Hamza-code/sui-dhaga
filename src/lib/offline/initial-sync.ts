@@ -14,6 +14,7 @@ import { getOfflineDb, isOfflineDbAvailable } from "./db";
 import type {
   LocalCustomer,
   LocalMeasurement,
+  LocalCoatMeasurement,
   LocalMeasurementSnapshot,
   LocalOrder,
   LocalOrderItem,
@@ -34,11 +35,29 @@ interface InitialSyncResponse {
   pulledAt: string;
   customers: Omit<LocalCustomer, "syncStatus">[];
   measurements: Omit<LocalMeasurement, "syncStatus">[];
+  coatMeasurements: Omit<LocalCoatMeasurement, "syncStatus">[];
   orders: Omit<LocalOrder, "syncStatus">[];
   orderItems: Omit<LocalOrderItem, "syncStatus">[];
   measurementSnapshots: Omit<LocalMeasurementSnapshot, "syncStatus">[];
   designOptions: LocalDesignOption[];
   shopSettings: Omit<LocalShopSettings, never> | null;
+  restoreGeneration: number;
+}
+
+/**
+ * Backup & Restore (Requirement 10) — whether this pull's server-
+ * reported `restoreGeneration` means every still-pending local
+ * DELETE_ORDER needs manual reconfirmation before it can send again.
+ * `undefined` (this device has never recorded a generation before —
+ * including every pre-restore-feature install) deliberately means "no
+ * baseline to compare against", not "reconfirm everything" — there is
+ * nothing to have drifted relative to yet. Extracted as a plain, pure
+ * function — no Dexie/Table involved — for the same reason
+ * shouldSkipServerRow/pendingDeleteOrderIds already are: directly
+ * testable without a browser.
+ */
+export function shouldReconfirmPendingDeletes(storedGeneration: number | undefined, serverGeneration: number): boolean {
+  return storedGeneration !== undefined && storedGeneration !== serverGeneration;
 }
 
 /**
@@ -209,13 +228,47 @@ export async function runInitialSync(): Promise<InitialSyncResult> {
     // requirement is satisfied by construction, not by manual bookkeeping.
     await db.transaction(
       "rw",
-      [db.customers, db.measurements, db.orders, db.orderItems, db.measurementSnapshots, db.designOptions, db.shopSettings, db.syncQueue, db.syncMeta],
+      [
+        db.customers,
+        db.measurements,
+        db.coatMeasurements,
+        db.orders,
+        db.orderItems,
+        db.measurementSnapshots,
+        db.designOptions,
+        db.shopSettings,
+        db.syncQueue,
+        db.syncMeta,
+      ],
       async () => {
         // Step 55 (Part 6) — orders this browser has already locally
         // deleted but whose delete hasn't reached "synced" yet must
         // never be pulled back in by this same sync run — see
         // pendingDeleteOrderIds's own comment.
-        const pendingDeletes = pendingDeleteOrderIds(await db.syncQueue.toArray());
+        const queueItems = await db.syncQueue.toArray();
+        const pendingDeletes = pendingDeleteOrderIds(queueItems);
+
+        // Backup & Restore (Requirement 10) — a restore happening since
+        // this device's last pull means every still-pending DELETE_ORDER
+        // was queued against a view of the data that may no longer
+        // reflect reality. Ordinary UPDATE_*/CREATE_* ops are already
+        // protected by their own existing version/existence guards
+        // regardless of this check; a delete is the one irreversible,
+        // non-mergeable action, so it gets this extra, explicit
+        // reconfirmation step instead of being silently resent.
+        const storedGeneration = await db.syncMeta.get("restoreGeneration");
+        if (shouldReconfirmPendingDeletes(storedGeneration?.value as number | undefined, data.restoreGeneration)) {
+          for (const item of queueItems) {
+            if (item.op === "DELETE_ORDER" && item.status === "pending" && item.id !== undefined) {
+              await db.syncQueue.update(item.id, {
+                status: "failed",
+                dispatchBlocked: true,
+                lastError: "A backup restore occurred since this delete was queued — please reconfirm before it is sent again.",
+              });
+            }
+          }
+        }
+        await db.syncMeta.put({ key: "restoreGeneration", value: data.restoreGeneration });
 
         // Phase 9 — these three tables can each have a locally-pending
         // (not yet synced) or conflicted edit in flight, so they go
@@ -223,6 +276,7 @@ export async function runInitialSync(): Promise<InitialSyncResult> {
         // function's own comment for exactly why.
         await bulkPutPreservingPendingEdits<LocalCustomer>(db.customers, data.customers);
         await bulkPutPreservingPendingEdits<LocalMeasurement>(db.measurements, data.measurements);
+        await bulkPutPreservingPendingEdits<LocalCoatMeasurement>(db.coatMeasurements, data.coatMeasurements);
         await bulkPutPreservingPendingEdits<LocalOrder>(db.orders, data.orders, pendingDeletes);
         // orderItems is never independently locally-edited (Phase 1/6) —
         // unchanged, plain bulkPut, except the same pending-delete
@@ -262,6 +316,7 @@ export async function runInitialSync(): Promise<InitialSyncResult> {
     counts: {
       customers: data.customers.length,
       measurements: data.measurements.length,
+      coatMeasurements: data.coatMeasurements.length,
       orders: data.orders.length,
       orderItems: data.orderItems.length,
       measurementSnapshots: data.measurementSnapshots.length,

@@ -15,65 +15,23 @@
 // downloadable file actually is: text. The client-side download trigger
 // (backup-download.ts) never touches the database at all.
 
-import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 import { toCsv } from "@/lib/csv";
 import { en } from "@/lib/locale";
-
-const BACKUP_FORMAT = "sui-dhaga-backup";
-const BACKUP_VERSION = 1;
+import { buildFullBackupContent } from "@/lib/backup-content";
 
 /**
- * Full JSON backup of every persisted business record (Part 2/3). Covers
- * every model in prisma/schema.prisma except the parts of User that are
- * authentication secrets — see the explicit `select` below, which is the
- * one and only place passwordHash could leak from and deliberately never
- * does.
+ * Full JSON backup of every persisted business record (Part 2/3). The
+ * actual data-building logic lives in backup-content.ts's
+ * buildFullBackupContent() now (also reused by the restore engine's own
+ * pre-restore safety backup) — this function's own job is strictly the
+ * authorization check plus being the Server Action the download button
+ * calls.
  */
 export async function generateFullBackup(): Promise<string> {
   await requireSession();
-
-  const [users, customers, measurements, orders, orderItems, measurementSnapshots, designOptions, shopSettings] =
-    await Promise.all([
-      // Never passwordHash — id/name/email/createdAt only, kept solely so
-      // the *ById relations below stay meaningful (who created/updated
-      // what), not as an account list.
-      prisma.user.findMany({ select: { id: true, name: true, email: true, createdAt: true } }),
-      prisma.customer.findMany({ orderBy: { createdAt: "asc" } }),
-      prisma.measurement.findMany(),
-      prisma.order.findMany({ orderBy: { orderNumber: "asc" } }),
-      prisma.orderItem.findMany({ orderBy: [{ orderId: "asc" }, { position: "asc" }] }),
-      prisma.measurementSnapshot.findMany(),
-      prisma.designOption.findMany({ orderBy: [{ category: "asc" }, { sortOrder: "asc" }] }),
-      prisma.shopSettings.findMany(),
-    ]);
-
-  const backup = {
-    format: BACKUP_FORMAT,
-    version: BACKUP_VERSION,
-    createdAt: new Date().toISOString(),
-    data: {
-      // Every record keeps its real id and every foreign key exactly as
-      // stored (customerId, orderId, createdById, defaultMeasurementSnapshotId,
-      // measurementSnapshotId, pocketOptionId, pattiOptionId, ...) — a
-      // restore/import step (not part of Step 19) could reconstruct every
-      // relationship from this alone, nothing is flattened away.
-      users,
-      customers,
-      measurements,
-      orders,
-      orderItems,
-      measurementSnapshots,
-      designOptions,
-      shopSettings,
-    },
-  };
-
-  // JSON.stringify already calls Decimal's toJSON()/toString() and
-  // Date's toJSON() (-> ISO string) for every nested value, so every
-  // amount/measurement value and timestamp comes out as a plain,
-  // human-readable string/number — never an opaque object.
-  return JSON.stringify(backup, null, 2);
+  return buildFullBackupContent();
 }
 
 /** Every Customer record — active and soft-deleted alike; see the Step 19 report for why. */

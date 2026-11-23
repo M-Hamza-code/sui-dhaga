@@ -218,6 +218,8 @@ export default function SyncCheckPage() {
       length: measLength,
       shoulder: "",
       sleeve: "",
+      armHole: "",
+      kohni: "",
       neck: "",
       chest: "",
       waist: "",

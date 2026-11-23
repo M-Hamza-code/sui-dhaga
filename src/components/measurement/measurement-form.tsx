@@ -1,15 +1,19 @@
 "use client";
 
-// S3-style measurement input (Step 13). Rebuilds the UX only — the
-// underlying validation contract is exactly Step 5's saveMeasurement
-// upsert rule (measurementInputSchema), untouched. Every decimal field
-// renders a visible fraction-glyph display input plus a hidden
-// plain-decimal input carrying the real `name`; only the hidden inputs
-// are ever submitted, so that contract never changes.
+// S3-style measurement input (Step 13; Upgrade 1 replaced free-text +
+// fraction-glyph entry with predefined-value dropdowns — see
+// measurement-options.ts and measurement-decimal-field.tsx for the final
+// control: a real text input paired with an app-styled dropdown panel,
+// not a native <select>/<datalist> — see that component's own comment
+// for why). The underlying validation contract is exactly Step 5's
+// saveMeasurement upsert rule (measurementInputSchema), untouched. Every
+// decimal field's own value IS the plain decimal string submitted under
+// its real `name` — no separate display/hidden-input pair is needed,
+// since there's no display format that differs from what's submitted.
 //
 // Phase 6 (offline-first) — local-first: submitting no longer posts to
 // the saveMeasurement Server Action directly. handleSubmit reads the
-// same hidden-input FormData the Server Action always received (via
+// same FormData the Server Action always received (via
 // `new FormData(event.currentTarget)` — the field names/values are
 // identical), then writes it into Dexie + a SAVE_MEASUREMENT queue item
 // in ONE atomic transaction (enqueueSaveMeasurement, sync-engine.ts),
@@ -30,8 +34,8 @@ import {
   saveMeasurementDraft,
   clearMeasurementDraft,
 } from "@/lib/measurement-draft-storage";
-import { toFractionDisplay, fractionDisplayToDecimal } from "@/lib/fractions";
 import { KAMEEZ_FIELDS, SHALWAR_DECIMAL_FIELDS, SHALWAR_POCKET_FIELD } from "@/lib/measurement-fields";
+import { MeasurementDecimalField } from "@/components/measurement/measurement-decimal-field";
 import { en } from "@/lib/locale";
 
 const SHALWAR_LENGTH = findField("shalwarLength");
@@ -49,14 +53,19 @@ const SEQUENCE: string[] = [
   SHALWAR_GHERA_READY.key,
 ];
 
-const FRACTION_KEYS = ["½", "¼", "¾"] as const;
-
 function findField(key: string) {
   const field = SHALWAR_DECIMAL_FIELDS.find((f) => f.key === key);
   if (!field) throw new Error(`Unknown measurement field: ${key}`);
   return field;
 }
 
+// Upgrade 1 — predefined-value dropdowns replaced the old free-text +
+// fraction-glyph entry, so this now stores the PLAIN decimal value
+// directly (e.g. "44.5", not "44½") for every decimal field — exactly
+// what each field's <select> uses as its own value, and exactly what's
+// submitted (the <select>'s own `name` carries it; no hidden input is
+// needed anymore). "" means "not specified", same convention
+// shalwarPocket's select already used.
 function initialDisplayValues(measurement: Measurement | null): Record<string, string> {
   const values: Record<string, string> = {};
   for (const key of SEQUENCE) {
@@ -64,7 +73,7 @@ function initialDisplayValues(measurement: Measurement | null): Record<string, s
       values[key] = measurement?.shalwarPocket === true ? "yes" : measurement?.shalwarPocket === false ? "no" : "";
     } else {
       const raw = measurement ? (measurement as unknown as Record<string, unknown>)[key] : null;
-      values[key] = toFractionDisplay(raw == null ? null : String(raw));
+      values[key] = raw == null ? "" : String(raw);
     }
   }
   return values;
@@ -106,6 +115,18 @@ export function MeasurementForm({
   // would claim to have restored unsaved work that never existed.
   const touched = useRef(false);
 
+  // Gates the draft entirely (both reading and writing it). True only once
+  // a REAL saved Measurement row exists for this customer — either the
+  // server-rendered `measurement` prop, or a local Dexie row found by the
+  // mount effect below. A customer with no saved measurement yet (the
+  // "new customer" / first-time-entry case, including one created offline
+  // and not yet synced) never gets a draft persisted or restored: a
+  // refresh before saving must return to a genuinely empty form, not
+  // resurrect what was typed. A customer who already has a saved
+  // measurement keeps full autosave/restore exactly as before — this only
+  // narrows the no-measurement-yet case, it doesn't touch editing.
+  const hasSavedMeasurement = useRef(measurement != null);
+
   // Phase 6 — "local storage is the source of truth" (same principle
   // Phase 5's EditCustomerForm/CustomerIdentityCard already apply): a
   // local measurement row, if one exists, is by definition at least as
@@ -140,6 +161,7 @@ export function MeasurementForm({
           original.current = fresh;
           setValues(fresh);
           setNoteValue(localMeasurement.note ?? "");
+          hasSavedMeasurement.current = true;
         }
 
         // LAST, so it wins over both the server prefill and the local
@@ -147,8 +169,11 @@ export function MeasurementForm({
         // recent thing the user typed. Deliberately does NOT move
         // `original.current` — that stays the last SAVED baseline, so
         // restored-but-unsaved fields keep showing the amber "changed"
-        // treatment and the change count stays truthful.
-        applyDraft();
+        // treatment and the change count stays truthful. Skipped entirely
+        // when there's no saved measurement yet — see hasSavedMeasurement.
+        if (hasSavedMeasurement.current) {
+          applyDraft();
+        }
       } catch {
         // Best-effort only — if Dexie can't be read for any reason, the
         // server-provided values (if any) are still shown as-is.
@@ -190,6 +215,10 @@ export function MeasurementForm({
   // nothing worth keeping, so the draft is removed instead of stored.
   useEffect(() => {
     if (!touched.current) return;
+    // No saved measurement yet for this customer: never persist a draft,
+    // so there is nothing left to restore on a refresh (see
+    // hasSavedMeasurement's own comment).
+    if (!hasSavedMeasurement.current) return;
 
     const dirty =
       noteValue !== (measurement?.note ?? "") ||
@@ -212,14 +241,16 @@ export function MeasurementForm({
     setSubmitting(true);
 
     // The exact same field names/values saveMeasurement's FormData
-    // parsing has always read — only the hidden decimal inputs and the
-    // pocket <select> carry a `name`, so this produces the identical
-    // shape regardless of the fraction-glyph display state above it.
+    // parsing has always read — every decimal field's <select> and the
+    // pocket <select> all carry a real `name`, so this produces the
+    // identical shape it always has.
     const formData = new FormData(event.currentTarget);
     const result = await enqueueSaveMeasurement(customerId, {
       length: String(formData.get("length") ?? ""),
       shoulder: String(formData.get("shoulder") ?? ""),
       sleeve: String(formData.get("sleeve") ?? ""),
+      armHole: String(formData.get("armHole") ?? ""),
+      kohni: String(formData.get("kohni") ?? ""),
       neck: String(formData.get("neck") ?? ""),
       chest: String(formData.get("chest") ?? ""),
       waist: String(formData.get("waist") ?? ""),
@@ -254,12 +285,11 @@ export function MeasurementForm({
     document.querySelector<HTMLInputElement>(`[data-mkey="${SEQUENCE[0]}"]`)?.focus();
   }, []);
 
-  function setFieldValue(key: string, raw: string) {
+  function setFieldValue(key: string, decimalValue: string) {
     touched.current = true;
-    // Live fraction normalization: the instant a typed value ends in
-    // .5/.25/.75, it becomes ½/¼/¾ — matches the brief's "typing .5 also
-    // gives ½".
-    setValues((prev) => ({ ...prev, [key]: toFractionDisplay(raw) }));
+    // decimalValue is already the exact plain-decimal <option> value the
+    // user picked — no conversion needed (Upgrade 1).
+    setValues((prev) => ({ ...prev, [key]: decimalValue }));
   }
 
   function focusField(key: string) {
@@ -271,17 +301,6 @@ export function MeasurementForm({
     if (!next) return;
     focusField(next);
     setActiveField(next);
-  }
-
-  function applyFraction(glyph: string) {
-    if (activeField === SHALWAR_POCKET_FIELD.key) return;
-    touched.current = true;
-    setValues((prev) => {
-      const current = prev[activeField] ?? "";
-      const withoutFraction = current.replace(/[½¼¾]/g, "");
-      return { ...prev, [activeField]: withoutFraction + glyph };
-    });
-    focusField(activeField);
   }
 
   // "Changed" means different from the saved value AND not empty — an
@@ -383,18 +402,6 @@ export function MeasurementForm({
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-rule pt-3">
-          {FRACTION_KEYS.map((glyph) => (
-            <button
-              key={glyph}
-              type="button"
-              disabled={activeField === SHALWAR_POCKET_FIELD.key}
-              onClick={() => applyFraction(glyph)}
-              className="h-9 w-11 rounded-sm border border-rule bg-paper text-lg text-indigo transition hover:bg-card disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {glyph}
-            </button>
-          ))}
-          <span className="ml-1 text-xs text-graphite/50">{en.measurementForm.fractionHint}</span>
           <span className="flex-1" />
           <span className={`text-xs ${changedCount > 0 ? "text-amber" : "text-graphite/40"}`}>{changedNote}</span>
         </div>
@@ -538,8 +545,11 @@ function DecimalRow({
   onChange: (value: string) => void;
   onEnter: () => void;
 }) {
-  const decimalValue = fractionDisplayToDecimal(value);
-
+  // Upgrade 1 (second revision) — MeasurementDecimalField is a real text
+  // input paired with an app-styled dropdown panel this component itself
+  // renders (not a native <select>, which can't accept typed custom
+  // values at all, and not a native <datalist>, whose popup is rendered
+  // by browser chrome rather than this app's own styling).
   return (
     <div
       className={`flex items-center gap-2 rounded-sm px-2 py-1.5 ${isActive ? "bg-paper" : ""}`}
@@ -550,45 +560,21 @@ function DecimalRow({
       </span>
       <span className="hidden text-[10px] uppercase tracking-wide text-graphite/40 sm:inline">{label}</span>
       <span className="flex-1" />
-      {/* The Urdu glyph and English label beside this field are plain
-          <span>s, not a <label> — they're laid out as one dense row, and
-          the English half is hidden below sm. So neither was ever
-          readable as this input's name: a screen reader announced ~16
-          unnamed text boxes, and on a phone the English word isn't on
-          screen at all. aria-label carries both, from the same two
-          strings already rendered, so there is no visual change and no
-          second source of truth for the field names.
-
-          The focus-visible ring below sits on the shared half of the
-          class string rather than inside either branch: the isChanged
-          branch paired focus:outline-none with no focus style of its
-          own, so an already-edited field showed no caret position at
-          all to a keyboard user. Both branches keep their existing
-          border and background colors exactly as before. */}
-      <input
-        type="text"
-        inputMode="decimal"
-        data-mkey={fieldKey}
-        aria-label={`${label} (${ur})`}
+      <MeasurementDecimalField
+        fieldKey={fieldKey}
+        name={fieldKey}
         value={value}
+        placeholder={en.measurementForm.notSpecified}
+        ariaLabel={`${label} (${ur})`}
         onFocus={onFocus}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            onEnter();
-          }
-        }}
+        onChange={onChange}
+        onEnter={onEnter}
         className={`w-24 rounded-sm border px-2 py-1 text-right text-xl tabular-nums focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo ${
           isChanged
             ? "border-amber bg-amber/10 font-semibold text-amber"
             : "border-rule bg-card text-graphite focus:border-indigo"
         }`}
       />
-      {/* The only field actually submitted — always a plain decimal
-          string, so measurement-actions.ts's existing validation and
-          Prisma's Decimal column never see a fraction glyph. */}
-      <input type="hidden" name={fieldKey} value={decimalValue} />
     </div>
   );
 }

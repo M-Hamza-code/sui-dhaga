@@ -28,7 +28,7 @@ export function useDeleteOrder(customerId: string, orderId: string, orderNumberD
 
     const result = await enqueueDeleteOrder(customerId, orderId);
     if (!result.queued) {
-      setError(en.orderDetail.deleteOrderFailed);
+      setError(result.message ?? en.orderDetail.deleteOrderFailed);
       setDeleting(false);
       return;
     }

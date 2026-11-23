@@ -12,6 +12,7 @@ export const dynamic = "force-dynamic";
 interface OrderDeleteSyncBody {
   customerId?: unknown;
   orderId?: unknown;
+  baseUpdatedAt?: unknown;
 }
 
 export async function POST(request: Request) {
@@ -27,19 +28,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Malformed JSON body" }, { status: 400 });
   }
 
-  const { customerId, orderId } = body ?? {};
+  const { customerId, orderId, baseUpdatedAt } = body ?? {};
   if (typeof customerId !== "string" || !customerId) {
     return NextResponse.json({ error: "customerId is required" }, { status: 400 });
   }
   if (typeof orderId !== "string" || !orderId) {
     return NextResponse.json({ error: "orderId is required" }, { status: 400 });
   }
+  if (typeof baseUpdatedAt !== "string" || !baseUpdatedAt) {
+    return NextResponse.json({ error: "baseUpdatedAt is required" }, { status: 400 });
+  }
 
-  const result = await applyOrderDeleteSync(customerId, orderId);
+  const result = await applyOrderDeleteSync(customerId, orderId, baseUpdatedAt);
 
   if (!result.ok) {
     if (result.reason === "customer-not-found") {
       return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+    }
+    if (result.reason === "conflict") {
+      return NextResponse.json(
+        { error: "This order was changed elsewhere since this delete was queued", serverUpdatedAt: result.serverUpdatedAt },
+        { status: 409 }
+      );
     }
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }

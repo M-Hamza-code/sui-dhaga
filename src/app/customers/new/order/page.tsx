@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { OrderForm } from "@/components/orders/order-form";
-import { parseDefaultPrices } from "@/lib/shop-settings";
+import { parseDefaultPrices, parseDefaultGarmentPrices } from "@/lib/shop-settings";
 import { en } from "@/lib/locale";
 import type { Metadata } from "next";
 
@@ -25,13 +25,17 @@ export default async function NewCustomerOrderPage({
 }: {
   searchParams: { error?: string };
 }) {
-  const [pocketOptions, pattiOptions, shopSettings] = await Promise.all([
+  const [pocketOptions, pattiOptions, panchaOptions, shopSettings] = await Promise.all([
     prisma.designOption.findMany({
       where: { category: "POCKET", isActive: true },
       orderBy: { sortOrder: "asc" },
     }),
     prisma.designOption.findMany({
       where: { category: "PATTI", isActive: true },
+      orderBy: { sortOrder: "asc" },
+    }),
+    prisma.designOption.findMany({
+      where: { category: "PANCHA", isActive: true },
       orderBy: { sortOrder: "asc" },
     }),
     prisma.shopSettings.findUnique({ where: { singleton: true } }),
@@ -51,9 +55,11 @@ export default async function NewCustomerOrderPage({
           measurement={null}
           pocketOptions={pocketOptions}
           pattiOptions={pattiOptions}
+          panchaOptions={panchaOptions}
           error={error}
           defaultAdvancePercent={shopSettings?.defaultAdvancePercent?.toString() ?? null}
           defaultPrices={parseDefaultPrices(shopSettings?.defaultPrices)}
+          defaultGarmentPrices={parseDefaultGarmentPrices(shopSettings?.defaultPrices)}
         />
       </PageContainer>
     </main>

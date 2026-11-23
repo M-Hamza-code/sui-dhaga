@@ -9,8 +9,13 @@ import { SectionCard } from "@/components/ui/section-card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { OrderStatusForm } from "@/components/orders/order-status-form";
 import { OrderPendingEditNotice } from "@/components/orders/order-pending-edit-notice";
+import { OrderPrintLinks } from "@/components/orders/order-print-links";
 import { DeleteOrderButton } from "@/components/orders/delete-order-button";
 import { KAMEEZ_FIELDS, SHALWAR_DECIMAL_FIELDS, SHALWAR_POCKET_FIELD } from "@/lib/measurement-fields";
+import { COAT_FIELDS, WAISTCOAT_FIELDS } from "@/lib/coat-measurement-fields";
+import { includesPrinceCoat, includesWaistcoat, unionCoatGarmentSelection, type CoatGarmentSelectionLike } from "@/lib/coat-garment-selection";
+import { hasPrinceCoatMeasurementData, hasWaistcoatMeasurementData } from "@/lib/garment-ordered";
+import type { MeasurementMode } from "@prisma/client";
 import { toFractionDisplay } from "@/lib/fractions";
 import { en } from "@/lib/locale";
 import {
@@ -56,6 +61,7 @@ export default async function OrderDetailPage({
       customer: true,
       pocketOption: true,
       pattiOption: true,
+      panchaOption: true,
       defaultMeasurementSnapshot: true,
       // Step 50 — pocketOption added so a per-suit pocket style override
       // can be shown below alongside the measurement override.
@@ -73,6 +79,41 @@ export default async function OrderDetailPage({
   const customer = order.customer;
   const isDeleted = customer.deletedAt !== null;
   const balanceOwed = Number(order.balanceAmount) > 0;
+  // Requirement 4/6 — "Show correct quantities, individual prices,
+  // subtotals" for Coat/Waistcoat on the Payment breakdown below. Each
+  // Coat-mode item's own EXPLICIT garment selection (never measurement
+  // content — see CoatGarmentSelection's own schema.prisma comment)
+  // independently decides whether it counts toward princeCoatQuantity,
+  // waistcoatQuantity, or both. NULL (a Coat item saved before this field
+  // existed) is interpreted as BOTH for backward compatibility, same
+  // fallback getOrderPrintData() already applies for the Edit page.
+  const coatModeItems = order.items.filter((item) => (item.measurementMode ?? order.measurementMode) === "COAT");
+  // "Only bill for garments actually ordered" — a Coat-mode item only
+  // counts toward a garment's quantity if it's BOTH structurally that
+  // garment AND actually has real measurement data for it (never merely
+  // because its quantity defaulted to 1 when its tab was opened) — see
+  // garment-ordered.ts's own comment.
+  let princeCoatQuantity = 0;
+  let waistcoatQuantity = 0;
+  for (const item of coatModeItems) {
+    const selection = item.coatGarmentSelection ?? "BOTH";
+    const snapshot = item.measurementSnapshot ?? order.defaultMeasurementSnapshot;
+    if ((selection === "PRINCE_COAT" || selection === "BOTH") && hasPrinceCoatMeasurementData(snapshot)) princeCoatQuantity++;
+    if ((selection === "WAISTCOAT" || selection === "BOTH") && hasWaistcoatMeasurementData(snapshot)) waistcoatQuantity++;
+  }
+  const princeCoatTotal = princeCoatQuantity > 0 && order.princeCoatUnitPrice ? Number(order.princeCoatUnitPrice) * princeCoatQuantity : null;
+  const waistcoatTotal = waistcoatQuantity > 0 && order.waistcoatUnitPrice ? Number(order.waistcoatUnitPrice) * waistcoatQuantity : null;
+
+  // Measurement-group visibility fix — the "Default Measurements" card
+  // below shows the ORDER's single shared snapshot, used by every
+  // Coat-mode item that has no own override (measurementSnapshot ===
+  // null). Its own Coat/Waistcoat visibility must be the union of what
+  // those entries actually need — same rule, same helper, as the Order
+  // Form's own shared-block computation (computeSharedCoatVisibleGroup).
+  // Never affects pricing above, which is untouched.
+  const sharedCoatItems = coatModeItems.filter((item) => !item.measurementSnapshot);
+  const sharedCoatItemCount = sharedCoatItems.length;
+  const sharedCoatVisibleGroup: CoatGarmentSelectionLike = unionCoatGarmentSelection(sharedCoatItems.map((item) => item.coatGarmentSelection ?? "BOTH")) ?? "BOTH";
 
   return (
     <main className="min-h-screen bg-paper">
@@ -116,24 +157,7 @@ export default async function OrderDetailPage({
                 {en.orderForm.editLinkLabel}
               </Link>
             )}
-            <Link
-              href={`/customers/${customer.id}/orders/${order.id}/receipt`}
-              className="rounded-sm border border-rule px-3.5 py-2 text-sm text-graphite transition hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
-            >
-              {en.print.receipt.linkLabel}
-            </Link>
-            <Link
-              href={`/customers/${customer.id}/orders/${order.id}/work-order`}
-              className="rounded-sm border border-rule px-3.5 py-2 text-sm text-graphite transition hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
-            >
-              {en.print.workOrder.linkLabel}
-            </Link>
-            <Link
-              href={`/customers/${customer.id}/orders/${order.id}/whatsapp`}
-              className="rounded-sm border border-rule px-3.5 py-2 text-sm text-graphite transition hover:bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo focus-visible:ring-offset-1"
-            >
-              {en.whatsapp.linkLabel}
-            </Link>
+            <OrderPrintLinks customerId={customer.id} orderId={order.id} />
           </div>
 
           {/* Step 55 (Part 2) — on its own row: visually distinct from
@@ -170,9 +194,16 @@ export default async function OrderDetailPage({
               only when there's more than one suit, to avoid implying
               every suit shares this — the Suits section right below shows
               any suit 2+ that was configured differently. */}
+          {/* A Coat-mode order has no Suit & Styles section at all — same
+              rule the order form itself follows (none of these fields are
+              ever submitted for one). */}
+          {order.measurementMode !== "COAT" && (
           <SectionCard title={order.items.length > 1 ? en.orderDetail.designSelectionsSuit1 : en.orderDetail.designSelections}>
             <dl className="divide-y divide-rule/60 text-sm">
-              <Row label={en.orderDetail.suitType} value={SUIT_TYPE_LABELS[order.suitType]} />
+              {/* Upgrade — Suit Type/Cuff/Ghera can now each be "Not
+                  Specified" (null), same conditional-row treatment
+                  Collar/Bain/Patti/Pancha already use just below. */}
+              {order.suitType && <Row label={en.orderDetail.suitType} value={SUIT_TYPE_LABELS[order.suitType]} />}
               {/* Step 63 — Collar and Bain are now a single combined
                   choice (exactly one set, never both, never neither) for
                   any order created/edited since; each row is shown only
@@ -185,12 +216,14 @@ export default async function OrderDetailPage({
                   recorded at the time. */}
               {order.collarType && <Row label={en.orderDetail.collar} value={COLLAR_TYPE_LABELS[order.collarType]} />}
               {order.bainType && <Row label={en.orderDetail.bain} value={BAIN_TYPE_LABELS[order.bainType]} />}
-              <Row label={en.orderDetail.cuff} value={CUFF_TYPE_LABELS[order.cuffType]} />
+              {order.cuffType && <Row label={en.orderDetail.cuff} value={CUFF_TYPE_LABELS[order.cuffType]} />}
               <Row label={en.orderDetail.pocket} value={order.pocketOption?.label ?? "—"} />
               {order.pattiOption && <Row label={en.orderDetail.patti} value={order.pattiOption.label} />}
-              <Row label={en.orderDetail.ghera} value={GHERA_TYPE_LABELS[order.gheraType]} />
+              {order.panchaOption && <Row label={en.orderDetail.pancha} value={order.panchaOption.label} />}
+              {order.gheraType && <Row label={en.orderDetail.ghera} value={GHERA_TYPE_LABELS[order.gheraType]} />}
             </dl>
           </SectionCard>
+          )}
 
           <SectionCard title={en.orderDetail.suits}>
             {order.items.length === 0 ? (
@@ -213,20 +246,32 @@ export default async function OrderDetailPage({
                         actually configured differently from the order's
                         (suit 1's) style above; every other suit silently
                         shares that same style, exactly as before. */}
+                    {/* Independent sections upgrade — every Coat/Waistcoat
+                        entry is explicitly labeled as such (Kameez/Shalwar
+                        suits need no equivalent label — that's this
+                        section's own implied default). */}
+                    {(item.measurementMode ?? order.measurementMode) === "COAT" && (
+                      <p className="mt-1 text-xs text-graphite/50">{en.orderDetail.coatEntryLabel}</p>
+                    )}
                     {item.suitType && (
                       <dl className="mt-2 divide-y divide-rule/50 rounded-sm border border-rule/60 bg-card px-3 text-sm">
                         <Row label={en.orderDetail.suitType} value={SUIT_TYPE_LABELS[item.suitType]} />
                         {/* Step 63 — same combined-choice conditional rendering as the order-level rows above. */}
                         {item.collarType && <Row label={en.orderDetail.collar} value={COLLAR_TYPE_LABELS[item.collarType]} />}
                         {item.bainType && <Row label={en.orderDetail.bain} value={BAIN_TYPE_LABELS[item.bainType]} />}
-                        <Row label={en.orderDetail.cuff} value={CUFF_TYPE_LABELS[item.cuffType!]} />
+                        {/* Upgrade — Cuff/Ghera can now independently be "Not Specified" even when Suit Type itself was set. */}
+                        {item.cuffType && <Row label={en.orderDetail.cuff} value={CUFF_TYPE_LABELS[item.cuffType]} />}
                         <Row label={en.orderDetail.pocket} value={item.pocketOption?.label ?? "—"} />
-                        <Row label={en.orderDetail.ghera} value={GHERA_TYPE_LABELS[item.gheraType!]} />
+                        {item.gheraType && <Row label={en.orderDetail.ghera} value={GHERA_TYPE_LABELS[item.gheraType]} />}
                       </dl>
                     )}
                     {item.measurementSnapshot && (
                       <div className="mt-2">
-                        <MeasurementSnapshotGrid snapshot={item.measurementSnapshot} />
+                        <MeasurementSnapshotGrid
+                          snapshot={item.measurementSnapshot}
+                          mode={item.measurementMode ?? order.measurementMode}
+                          coatVisibleGroup={item.coatGarmentSelection ?? "BOTH"}
+                        />
                       </div>
                     )}
                   </div>
@@ -238,7 +283,25 @@ export default async function OrderDetailPage({
           <SectionCard title={en.orderDetail.defaultMeasurements}>
             {order.defaultMeasurementSnapshot ? (
               <div className="rounded-sm border border-rule bg-paper p-4">
-                <MeasurementSnapshotGrid snapshot={order.defaultMeasurementSnapshot} />
+                {/* Kameez/Shalwar grid — byte-for-byte unchanged (same
+                    call, same mode, same output) per explicit instruction
+                    not to touch existing Kameez/Shalwar behavior. */}
+                <MeasurementSnapshotGrid snapshot={order.defaultMeasurementSnapshot} mode={order.measurementMode} />
+                {/* Measurement-group visibility fix — a PURE ADDITION, not
+                    a replacement: Order.measurementMode is always
+                    KAMEEZ_SHALWAR under the current form (see this
+                    order's own pricing comment above), so the line above
+                    alone never rendered this order's actual Coat/
+                    Waistcoat shared data for a Coat-only or mixed order —
+                    a pre-existing display gap, not something this fix
+                    introduces. Rendered only when at least one Coat-mode
+                    item actually relies on this shared snapshot (has no
+                    own override). */}
+                {sharedCoatItemCount > 0 && (
+                  <div className="mt-4 border-t border-rule pt-4">
+                    <MeasurementSnapshotGrid snapshot={order.defaultMeasurementSnapshot} mode="COAT" coatVisibleGroup={sharedCoatVisibleGroup} />
+                  </div>
+                )}
                 {order.defaultMeasurementSnapshot.note && (
                   <p className="mt-3 border-t border-rule pt-3 text-sm text-graphite">{order.defaultMeasurementSnapshot.note}</p>
                 )}
@@ -258,6 +321,28 @@ export default async function OrderDetailPage({
               only Balance changed treatment; every value is the same
               formatMoney(order.*) call as before. */}
           <SectionCard title={en.orderDetail.payment}>
+            {/* Requirement 5 — Prince Coat/Waistcoat's own frozen unit
+                price and quantity, shown only when this order actually
+                has Coat/Waistcoat entries. Historically accurate even
+                after a later Settings default price change, since these
+                read the order's own persisted princeCoatUnitPrice/
+                waistcoatUnitPrice, never today's Settings value. */}
+            {(princeCoatQuantity > 0 || waistcoatQuantity > 0) && (
+              <dl className="mb-3 divide-y divide-rule/40 rounded-sm border border-rule bg-paper px-3 text-sm">
+                {princeCoatQuantity > 0 && (
+                  <Row
+                    label={`${en.orderForm.princeCoatTotal} (${princeCoatQuantity} × Rs. ${order.princeCoatUnitPrice?.toFixed(2) ?? "—"})`}
+                    value={princeCoatTotal !== null ? formatMoney(princeCoatTotal) : "—"}
+                  />
+                )}
+                {waistcoatQuantity > 0 && (
+                  <Row
+                    label={`${en.orderForm.waistcoatTotal} (${waistcoatQuantity} × Rs. ${order.waistcoatUnitPrice?.toFixed(2) ?? "—"})`}
+                    value={waistcoatTotal !== null ? formatMoney(waistcoatTotal) : "—"}
+                  />
+                )}
+              </dl>
+            )}
             <dl className="divide-y divide-rule/60 text-sm">
               <Row label={en.orderDetail.total} value={formatMoney(order.totalAmount)} />
               <Row label={en.orderDetail.advance} value={formatMoney(order.advanceAmount)} />
@@ -296,7 +381,24 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function MeasurementSnapshotGrid({ snapshot }: { snapshot: MeasurementSnapshot }) {
+function MeasurementSnapshotGrid({
+  snapshot,
+  mode = "KAMEEZ_SHALWAR",
+  coatVisibleGroup = "BOTH",
+}: {
+  snapshot: MeasurementSnapshot;
+  mode?: MeasurementMode;
+  /** Measurement-group visibility fix — filters which of the two Coat/Waistcoat groups actually render, using this specific item's own saved coatGarmentSelection (NULL already resolved to "BOTH" by the caller). Only consulted when mode === "COAT"; ignored otherwise. */
+  coatVisibleGroup?: CoatGarmentSelectionLike;
+}) {
+  if (mode === "COAT") {
+    return (
+      <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+        {includesPrinceCoat(coatVisibleGroup) && <MeasurementGroup title={en.orderForm.princeCoatMeasurements} fields={COAT_FIELDS} snapshot={snapshot} />}
+        {includesWaistcoat(coatVisibleGroup) && <MeasurementGroup title={en.orderForm.waistcoatMeasurements} fields={WAISTCOAT_FIELDS} snapshot={snapshot} />}
+      </div>
+    );
+  }
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
       <MeasurementGroup title={en.profile.kameez} fields={KAMEEZ_FIELDS} snapshot={snapshot} />

@@ -10,9 +10,10 @@ import { PendingOrdersNotice } from "@/components/customers/pending-orders-notic
 import { OrderHistoryStatus } from "@/components/customers/order-history-status";
 import { MeasurementSyncBadge } from "@/components/customers/measurement-sync-badge";
 import { KAMEEZ_FIELDS, SHALWAR_DECIMAL_FIELDS, SHALWAR_POCKET_FIELD } from "@/lib/measurement-fields";
+import { COAT_FIELDS, WAISTCOAT_FIELDS } from "@/lib/coat-measurement-fields";
 import { toFractionDisplay } from "@/lib/fractions";
 import { en } from "@/lib/locale";
-import type { Measurement } from "@prisma/client";
+import type { Measurement, CoatMeasurement } from "@prisma/client";
 import type { Metadata } from "next";
 
 // Page title for the browser tab / history entry (and, on the print
@@ -63,6 +64,7 @@ export default async function CustomerProfilePage({
     where: { id: params.customerId },
     include: {
       measurement: true,
+      coatMeasurement: true,
       orders: {
         orderBy: { createdAt: "desc" },
         include: { _count: { select: { items: true } } },
@@ -73,6 +75,7 @@ export default async function CustomerProfilePage({
   const isDeleted = customer?.deletedAt != null;
   const orders = customer?.orders ?? [];
   const measurement = customer?.measurement ?? null;
+  const coatMeasurement = customer?.coatMeasurement ?? null;
   const lastOrder = orders[0];
   const orderMeta =
     orders.length === 0
@@ -256,6 +259,42 @@ export default async function CustomerProfilePage({
               </div>
             )}
           </SectionCard>
+
+          {/* Coat & Waistcoat measurements — independent of the Kameez/
+              Shalwar profile above; a customer can have either, both, or
+              neither. Same card shape/behavior, Coat-mode sibling. */}
+          <SectionCard
+            title={en.profile.savedCoatMeasurements}
+            action={
+              !isDeleted ? (
+                <Link href={`/customers/${params.customerId}/coat-measurement/edit`} className="text-sm text-indigo hover:underline">
+                  {coatMeasurement ? en.profile.editCoatMeasurement : en.profile.addCoatMeasurement}
+                </Link>
+              ) : undefined
+            }
+          >
+            {coatMeasurement && (
+              <p className="-mt-1 mb-2 text-xs text-graphite/50">
+                {en.profile.measurementAgeTemplate.replace("{age}", formatRelativeTime(coatMeasurement.updatedAt))}
+              </p>
+            )}
+            {!coatMeasurement ? (
+              <p className="rounded-sm border border-dashed border-rule bg-paper p-4 text-sm text-graphite/60">
+                {en.profile.noMeasurementYet}
+              </p>
+            ) : (
+              <div className="space-y-4">
+                <CoatMeasurementGroup title={en.orderForm.princeCoatMeasurements} measurement={coatMeasurement} fields={COAT_FIELDS} />
+                <CoatMeasurementGroup title={en.orderForm.waistcoatMeasurements} measurement={coatMeasurement} fields={WAISTCOAT_FIELDS} />
+                {coatMeasurement.note && (
+                  <div>
+                    <h3 className="text-xs font-medium uppercase tracking-wide text-graphite/60">{en.profile.note}</h3>
+                    <p className="mt-1 rounded-sm border border-rule bg-paper p-3 text-sm text-graphite">{coatMeasurement.note}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </SectionCard>
         </div>
       </PageContainer>
     </main>
@@ -288,6 +327,27 @@ function MeasurementGroup({
             value={formatPocketValue(measurement[pocketField.key])}
           />
         )}
+      </dl>
+    </div>
+  );
+}
+
+function CoatMeasurementGroup({
+  title,
+  measurement,
+  fields,
+}: {
+  title: string;
+  measurement: CoatMeasurement;
+  fields: readonly { key: keyof CoatMeasurement; ur: string; label: string }[];
+}) {
+  return (
+    <div>
+      <h3 className="text-xs font-medium uppercase tracking-wide text-graphite/60">{title}</h3>
+      <dl className="mt-1 divide-y divide-rule/40 rounded-sm border border-rule bg-paper">
+        {fields.map((field) => (
+          <MeasurementRow key={field.key} ur={field.ur} label={field.label} value={formatDecimalValue(measurement[field.key])} />
+        ))}
       </dl>
     </div>
   );

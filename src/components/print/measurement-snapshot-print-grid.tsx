@@ -1,5 +1,7 @@
-import type { MeasurementSnapshot } from "@prisma/client";
+import type { MeasurementMode, MeasurementSnapshot } from "@prisma/client";
 import { KAMEEZ_FIELDS, SHALWAR_DECIMAL_FIELDS, SHALWAR_POCKET_FIELD } from "@/lib/measurement-fields";
+import { COAT_FIELDS, WAISTCOAT_FIELDS } from "@/lib/coat-measurement-fields";
+import { includesPrinceCoat, includesWaistcoat, type CoatGarmentSelectionLike } from "@/lib/coat-garment-selection";
 import { toFractionDisplay } from "@/lib/fractions";
 import { WORK_ORDER_UR } from "@/lib/work-order-style-labels";
 
@@ -17,12 +19,30 @@ import { WORK_ORDER_UR } from "@/lib/work-order-style-labels";
 // bidi-reordered. `snapshot` is null when neither an override nor a
 // default snapshot exists (a legacy order with nothing recorded) — shown
 // honestly, never invented.
-export function MeasurementSnapshotPrintGrid({ snapshot }: { snapshot: MeasurementSnapshot | null }) {
+export function MeasurementSnapshotPrintGrid({
+  snapshot,
+  mode = "KAMEEZ_SHALWAR",
+  coatGarmentSelection = "BOTH",
+}: {
+  snapshot: MeasurementSnapshot | null;
+  mode?: MeasurementMode;
+  /** Measurement-group visibility fix — filters which of the two Coat/Waistcoat groups print, using this specific suit's own saved coatGarmentSelection (the caller already resolves a legacy NULL to "BOTH" — see order-print-data.ts). Only consulted when mode === "COAT"; ignored otherwise. No pricing of any kind is added here — this sheet stays exactly as money-free as it always was. */
+  coatGarmentSelection?: CoatGarmentSelectionLike;
+}) {
   if (!snapshot) {
     return (
       <p dir="rtl" className="font-nastaliq text-sm text-graphite/60 print:text-black">
         {WORK_ORDER_UR.measurementsNotAvailable}
       </p>
+    );
+  }
+
+  if (mode === "COAT") {
+    return (
+      <div dir="rtl" className="grid grid-cols-2 gap-x-6 gap-y-1">
+        {includesPrinceCoat(coatGarmentSelection) && <Group title={WORK_ORDER_UR.princeCoatHeading} fields={COAT_FIELDS} snapshot={snapshot} />}
+        {includesWaistcoat(coatGarmentSelection) && <Group title={WORK_ORDER_UR.waistcoatHeading} fields={WAISTCOAT_FIELDS} snapshot={snapshot} />}
+      </div>
     );
   }
 

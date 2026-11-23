@@ -24,23 +24,38 @@ export function isValidOrderStatusValue(value: unknown): value is OrderStatus {
 }
 
 export type OrderStatusUpdateResult =
-  | { ok: true; changed: boolean }
-  | { ok: false; reason: "customer-not-found" | "order-not-found" | "invalid-status" };
+  | { ok: true; changed: boolean; updatedAt: string }
+  | { ok: false; reason: "customer-not-found" | "order-not-found" | "invalid-status" }
+  | { ok: false; reason: "conflict"; serverUpdatedAt: string };
 
 /**
  * The exact guard + mutation sequence updateOrderStatus has always
  * performed: customer must exist and not be soft-deleted, the order must
  * exist and belong to that customer, and the submitted status (if valid
- * and different) is applied with a plain `prisma.order.update`. This
- * database operation is naturally idempotent — re-applying the same
- * status to the same order twice produces the identical end state both
- * times, with no duplicate side effects — which is exactly what the
- * offline sync engine's retry behavior depends on (see sync-engine.ts).
+ * and different) is applied.
+ *
+ * `baseUpdatedAt` is OPTIONAL and used only by the offline sync path
+ * (the Route Handler always supplies it): when given, the write is an
+ * atomic conditional `updateMany` (no separate read-then-write — no
+ * TOCTOU gap), guarding against overwriting a change this device hasn't
+ * seen yet. When omitted (the plain online Server Action in
+ * order-actions.ts, a single round-trip against data it just read),
+ * this keeps its original unconditional behavior unchanged — there is
+ * no stale-offline-queue concept for that caller, so adding a baseline
+ * check there would only add complexity without a real race to guard
+ * against.
+ *
+ * Requesting the status the order ALREADY has is always a safe,
+ * idempotent no-op regardless of baseline — exactly like
+ * applyCustomerUpdateSync's content-equality short-circuit — which is
+ * what lets a retried request (or a genuine concurrent duplicate) for
+ * the same change succeed instead of reporting a false conflict.
  */
 export async function applyOrderStatusUpdate(
   customerId: string,
   orderId: string,
-  rawStatus: unknown
+  rawStatus: unknown,
+  baseUpdatedAt?: string
 ): Promise<OrderStatusUpdateResult> {
   const customer = await prisma.customer.findUnique({ where: { id: customerId } });
   if (!customer || customer.deletedAt) {
@@ -59,10 +74,33 @@ export async function applyOrderStatusUpdate(
     return { ok: false, reason: "invalid-status" };
   }
 
-  const changed = rawStatus !== order.status;
-  if (changed) {
-    await prisma.order.update({ where: { id: orderId }, data: { status: rawStatus } });
+  if (rawStatus === order.status) {
+    return { ok: true, changed: false, updatedAt: order.updatedAt.toISOString() };
   }
 
-  return { ok: true, changed };
+  if (baseUpdatedAt === undefined) {
+    const updated = await prisma.order.update({ where: { id: orderId }, data: { status: rawStatus } });
+    return { ok: true, changed: true, updatedAt: updated.updatedAt.toISOString() };
+  }
+
+  const conditional = await prisma.order.updateMany({
+    where: { id: orderId, customerId, updatedAt: new Date(baseUpdatedAt) },
+    data: { status: rawStatus },
+  });
+
+  if (conditional.count !== 1) {
+    const current = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!current) {
+      return { ok: false, reason: "order-not-found" };
+    }
+    if (current.status === rawStatus) {
+      // A concurrent request already applied this exact change (or this
+      // is our own retry racing itself) — idempotent success.
+      return { ok: true, changed: false, updatedAt: current.updatedAt.toISOString() };
+    }
+    return { ok: false, reason: "conflict", serverUpdatedAt: current.updatedAt.toISOString() };
+  }
+
+  const updatedOrder = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+  return { ok: true, changed: true, updatedAt: updatedOrder.updatedAt.toISOString() };
 }

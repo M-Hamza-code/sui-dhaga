@@ -44,6 +44,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
+import { ALL_COAT_FIELD_KEYS } from "@/lib/coat-measurement-fields";
 
 // This endpoint reads live session cookies and must never be cached —
 // getSession()'s use of next/headers' cookies() already forces dynamic
@@ -62,7 +63,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [customers, measurements, orders, designOptions, shopSettings] = await Promise.all([
+  const [customers, measurements, coatMeasurements, orders, designOptions, shopSettings] = await Promise.all([
     prisma.customer.findMany({
       where: { deletedAt: null },
       select: {
@@ -81,6 +82,9 @@ export async function GET() {
     prisma.measurement.findMany({
       where: { customer: { deletedAt: null } },
     }),
+    prisma.coatMeasurement.findMany({
+      where: { customer: { deletedAt: null } },
+    }),
     prisma.order.findMany({
       where: { customer: { deletedAt: null } },
       include: {
@@ -96,11 +100,17 @@ export async function GET() {
   const orderItems: Record<string, unknown>[] = [];
 
   function shapeSnapshot(s: NonNullable<(typeof orders)[number]["defaultMeasurementSnapshot"]>) {
+    const coatFields: Record<string, string | null> = {};
+    for (const key of ALL_COAT_FIELD_KEYS) {
+      coatFields[key] = decimalToString((s as unknown as Record<string, unknown>)[key]);
+    }
     return {
       id: s.id,
       length: decimalToString(s.length),
       shoulder: decimalToString(s.shoulder),
       sleeve: decimalToString(s.sleeve),
+      armHole: decimalToString(s.armHole),
+      kohni: decimalToString(s.kohni),
       neck: decimalToString(s.neck),
       chest: decimalToString(s.chest),
       waist: decimalToString(s.waist),
@@ -109,6 +119,7 @@ export async function GET() {
       pancha: decimalToString(s.pancha),
       shalwarPocket: s.shalwarPocket,
       shalwarGheraReady: decimalToString(s.shalwarGheraReady),
+      ...coatFields,
       note: s.note,
       isBackfilled: s.isBackfilled,
       createdAt: s.createdAt.toISOString(),
@@ -128,6 +139,21 @@ export async function GET() {
         orderId: item.orderId,
         position: item.position,
         measurementSnapshotId: item.measurementSnapshotId,
+        // NOTE: suitType/collarType/bainType/cuffType/gheraType/
+        // pocketOptionId were already absent from this payload before
+        // this upgrade (a pre-existing gap — per-suit style overrides
+        // never flowed through initial sync, only through a live
+        // CREATE_ORDER/UPDATE_ORDER sync) — left as-is, not silently
+        // fixed here, since it's unrelated to this feature. Flagged in
+        // the implementation report.
+        measurementMode: item.measurementMode,
+        // Explicit garment selection upgrade — threaded through the same
+        // way measurementMode already is, so an offline device's local
+        // mirror can resolve a Coat item's pricing without a live
+        // network round-trip (see order-print-data.ts's own NULL ->
+        // "BOTH" fallback for why the raw value is passed through as-is,
+        // not pre-resolved, here).
+        coatGarmentSelection: item.coatGarmentSelection,
         createdAt: item.createdAt.toISOString(),
         updatedAt: item.updatedAt.toISOString(),
       });
@@ -139,6 +165,7 @@ export async function GET() {
       customerId: o.customerId,
       orderDate: o.orderDate.toISOString(),
       deliveryDate: o.deliveryDate ? o.deliveryDate.toISOString() : null,
+      measurementMode: o.measurementMode,
       suitType: o.suitType,
       collarType: o.collarType,
       bainType: o.bainType,
@@ -146,15 +173,24 @@ export async function GET() {
       gheraType: o.gheraType,
       pocketOptionId: o.pocketOptionId,
       pattiOptionId: o.pattiOptionId,
+      panchaOptionId: o.panchaOptionId,
       defaultMeasurementSnapshotId: o.defaultMeasurementSnapshotId,
       totalAmount: decimalToString(o.totalAmount),
       advanceAmount: decimalToString(o.advanceAmount),
       balanceAmount: decimalToString(o.balanceAmount),
+      princeCoatUnitPrice: decimalToString(o.princeCoatUnitPrice),
+      waistcoatUnitPrice: decimalToString(o.waistcoatUnitPrice),
       status: o.status,
       createdById: o.createdById,
       note: o.note,
       createdAt: o.createdAt.toISOString(),
       updatedAt: o.updatedAt.toISOString(),
+      // The server's own confirmed version, for the offline queue's
+      // baseline-freeze mechanism (see LocalOrder.baseUpdatedAt's own
+      // comment) — same value as updatedAt at pull time by definition,
+      // kept as a separate field so a later local edit's own bumped
+      // updatedAt never gets mistaken for a confirmed baseline.
+      baseUpdatedAt: o.updatedAt.toISOString(),
     };
   });
 
@@ -171,6 +207,8 @@ export async function GET() {
       createdById: c.createdById,
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt.toISOString(),
+      // See the matching comment on the `orders` mapping below.
+      baseUpdatedAt: c.updatedAt.toISOString(),
     })),
     measurements: measurements.map((m) => ({
       id: m.id,
@@ -178,6 +216,8 @@ export async function GET() {
       length: decimalToString(m.length),
       shoulder: decimalToString(m.shoulder),
       sleeve: decimalToString(m.sleeve),
+      armHole: decimalToString(m.armHole),
+      kohni: decimalToString(m.kohni),
       neck: decimalToString(m.neck),
       chest: decimalToString(m.chest),
       waist: decimalToString(m.waist),
@@ -190,6 +230,20 @@ export async function GET() {
       updatedById: m.updatedById,
       updatedAt: m.updatedAt.toISOString(),
     })),
+    coatMeasurements: coatMeasurements.map((m) => {
+      const coatFields: Record<string, string | null> = {};
+      for (const key of ALL_COAT_FIELD_KEYS) {
+        coatFields[key] = decimalToString((m as unknown as Record<string, unknown>)[key]);
+      }
+      return {
+        id: m.id,
+        customerId: m.customerId,
+        ...coatFields,
+        note: m.note,
+        updatedById: m.updatedById,
+        updatedAt: m.updatedAt.toISOString(),
+      };
+    }),
     orders: orderRows,
     orderItems,
     measurementSnapshots,
@@ -214,5 +268,9 @@ export async function GET() {
           updatedAt: shopSettings.updatedAt.toISOString(),
         }
       : null,
+    // Backup & Restore — bumped by 1 every time a restore completes (see
+    // src/lib/restore/restore-actions.ts). 0 when ShopSettings doesn't
+    // exist yet, same as a brand-new install that's never had a restore.
+    restoreGeneration: shopSettings?.restoreGeneration ?? 0,
   });
 }

@@ -70,6 +70,7 @@ export function OrderStatusForm({
 }) {
   const router = useRouter();
   const [displayStatus, setDisplayStatus] = useState<OrderStatus>(status);
+  const [error, setError] = useState<string | null>(null);
 
   // Phase 11 (§2/§4/§5) — this dropdown's own `status` prop is a
   // server-rendered snapshot (Order Board / Order Detail are both
@@ -116,8 +117,10 @@ export function OrderStatusForm({
     // never actually recorded anywhere.
     const enqueueResult = await enqueueOrderStatusUpdate({ customerId, orderId, status: next });
     if (!enqueueResult.queued) {
+      setError(enqueueResult.message ?? "Could not update status. Please try again.");
       return;
     }
+    setError(null);
     setDisplayStatus(next);
 
     const processResult = await processSyncQueue();
@@ -140,27 +143,34 @@ export function OrderStatusForm({
   void redirectTo;
 
   return (
-    <select
-      name="status"
-      // This control has no visible <label> anywhere — on the Order
-      // Board it's one cell in a dense row, and on Order Detail it sits
-      // alone in the header card. So a screen reader had nothing to
-      // announce but the current value, with no indication that the
-      // dropdown changes an order's status.
-      aria-label={en.orderBoard.statusSelectAriaLabel}
-      value={displayStatus}
-      onChange={handleChange}
-      className={`rounded-sm border px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-indigo ${STATUS_TONE[displayStatus]}`}
-    >
-      {/* PENDING is legacy — not a selectable target, but stays valid as
-          the current value so a still-PENDING order renders correctly
-          until it's moved forward. */}
-      {displayStatus === "PENDING" && <option value="PENDING">{en.status.PENDING}</option>}
-      {OPTIONS.map((value) => (
-        <option key={value} value={value}>
-          {en.status[value]}
-        </option>
-      ))}
-    </select>
+    <div className="inline-flex flex-col gap-1">
+      <select
+        name="status"
+        // This control has no visible <label> anywhere — on the Order
+        // Board it's one cell in a dense row, and on Order Detail it sits
+        // alone in the header card. So a screen reader had nothing to
+        // announce but the current value, with no indication that the
+        // dropdown changes an order's status.
+        aria-label={en.orderBoard.statusSelectAriaLabel}
+        value={displayStatus}
+        onChange={handleChange}
+        className={`rounded-sm border px-3 py-1.5 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-indigo ${STATUS_TONE[displayStatus]}`}
+      >
+        {/* PENDING is legacy — not a selectable target, but stays valid as
+            the current value so a still-PENDING order renders correctly
+            until it's moved forward. */}
+        {displayStatus === "PENDING" && <option value="PENDING">{en.status.PENDING}</option>}
+        {OPTIONS.map((value) => (
+          <option key={value} value={value}>
+            {en.status[value]}
+          </option>
+        ))}
+      </select>
+      {error && (
+        <p role="alert" className="max-w-[16rem] text-xs text-red-700">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }

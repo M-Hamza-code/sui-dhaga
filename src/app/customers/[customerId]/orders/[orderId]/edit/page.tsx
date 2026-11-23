@@ -3,6 +3,7 @@ import type { CollarType, BainType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getOrderPrintData } from "@/lib/order-print-data";
 import { fromSnapshot } from "@/lib/measurement-prefill";
+import { coatFromSnapshot } from "@/lib/coat-measurement-prefill";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatOrderNumber } from "@/lib/format";
@@ -55,7 +56,7 @@ export default async function EditOrderPage({
 }: {
   params: { customerId: string; orderId: string };
 }) {
-  const [data, pocketOptions, pattiOptions] = await Promise.all([
+  const [data, pocketOptions, pattiOptions, panchaOptions] = await Promise.all([
     getOrderPrintData(params.customerId, params.orderId),
     prisma.designOption.findMany({
       where: { category: "POCKET", isActive: true },
@@ -63,6 +64,10 @@ export default async function EditOrderPage({
     }),
     prisma.designOption.findMany({
       where: { category: "PATTI", isActive: true },
+      orderBy: { sortOrder: "asc" },
+    }),
+    prisma.designOption.findMany({
+      where: { category: "PANCHA", isActive: true },
       orderBy: { sortOrder: "asc" },
     }),
   ]);
@@ -90,13 +95,15 @@ export default async function EditOrderPage({
     orderId: order.id,
     orderDateDisplay: order.orderDate.toISOString().slice(0, 10),
     deliveryDate: order.deliveryDate ? order.deliveryDate.toISOString().slice(0, 10) : "",
-    suitType: order.suitType,
+    measurementMode: order.measurementMode,
+    suitType: order.suitType ?? "",
     collarType: orderCollarBain.collarType,
     bainType: orderCollarBain.bainType,
-    cuffType: order.cuffType,
-    gheraType: order.gheraType,
+    cuffType: order.cuffType ?? "",
+    gheraType: order.gheraType ?? "",
     pocketOptionId: order.pocketOptionId ?? "",
     pattiOptionId: order.pattiOptionId ?? "",
+    panchaOptionId: order.panchaOptionId ?? "",
     // .toFixed(2), not .toString() — Decimal.js's own toString() drops
     // insignificant trailing zeros ("9999" instead of the stored
     // "9999.00"), which MONEY_REGEX still accepts (its decimal part is
@@ -104,20 +111,32 @@ export default async function EditOrderPage({
     // confusing display the moment the edit form opens.
     totalAmount: order.totalAmount.toFixed(2),
     advanceAmount: order.advanceAmount.toFixed(2),
+    princeCoatUnitPrice: order.princeCoatUnitPrice?.toFixed(2) ?? "",
+    waistcoatUnitPrice: order.waistcoatUnitPrice?.toFixed(2) ?? "",
     note: order.note ?? "",
     baseUpdatedAt: order.updatedAt.toISOString(),
     defaultMeasurement: order.defaultMeasurementSnapshot ? fromSnapshot(order.defaultMeasurementSnapshot) : null,
+    defaultCoatMeasurement: order.defaultMeasurementSnapshot ? coatFromSnapshot(order.defaultMeasurementSnapshot) : null,
     defaultNote: order.defaultMeasurementSnapshot?.note ?? "",
     items: suits.map((suit) => ({
       position: suit.position,
       override: suit.isOverride,
       measurement: suit.isOverride && suit.snapshot ? fromSnapshot(suit.snapshot) : null,
+      coatMeasurement: suit.isOverride && suit.snapshot ? coatFromSnapshot(suit.snapshot) : null,
+      // null here means "inherits the order's own measurementMode" — only
+      // ever a real per-suit value when it actually differs (see
+      // order-print-data.ts's own `item.measurementMode ?? order.measurementMode`
+      // resolution, which already means `suit.measurementMode` is never
+      // meaningfully different from `order.measurementMode` unless a real
+      // override exists at the OrderItem level).
+      measurementMode: suit.measurementMode !== order.measurementMode ? suit.measurementMode : null,
+      coatGarmentSelection: suit.coatGarmentSelection,
       style: suit.isStyleOverride
         ? {
-            suitType: suit.style.suitType,
+            suitType: suit.style.suitType ?? "",
             ...normalizeCollarBain(suit.style.collarType, suit.style.bainType),
-            cuffType: suit.style.cuffType,
-            gheraType: suit.style.gheraType,
+            cuffType: suit.style.cuffType ?? "",
+            gheraType: suit.style.gheraType ?? "",
             pocketOptionId: suit.style.pocketOption?.id ?? "",
           }
         : null,
@@ -173,6 +192,7 @@ export default async function EditOrderPage({
           measurement={null}
           pocketOptions={pocketOptions}
           pattiOptions={pattiOptions}
+          panchaOptions={panchaOptions}
         />
       </PageContainer>
     </main>

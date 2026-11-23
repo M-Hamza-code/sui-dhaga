@@ -70,6 +70,16 @@ export const DESIGN_OPTION_IMAGES: Record<string, string> = {
   PATTI_A: designImage("Chorous Patti.jpeg"),
   PATTI_B: designImage("Nok Daar Patti.jpeg"),
   PATTI_C: designImage("Fold Patti.jpeg"),
+  // Pancha Style — real photos added later than the other categories'.
+  // Filenames as actually provided (lowercase), re-confirmed directly
+  // against `ls public/design-images/` — a previous pass mistakenly
+  // transcribed the 4th file as "dori pancha.jpeg", which does not
+  // exist; the real file is "doora pancha.jpeg", matching the seeded
+  // "Doora Pancha" label exactly.
+  PANCHA_A: designImage("sada pancha.jpeg"),
+  PANCHA_B: designImage("jali pancha.jpeg"),
+  PANCHA_C: designImage("kanta pancha.jpeg"),
+  PANCHA_D: designImage("doora pancha.jpeg"),
 };
 
 function toLabelMap<T extends string>(options: { value: T; label: string }[]): Record<T, string> {

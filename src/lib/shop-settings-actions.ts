@@ -14,6 +14,7 @@ import { requireSession } from "@/lib/auth";
 import { MONEY_REGEX } from "@/lib/money";
 import { PHONE_REGEX } from "@/lib/phone";
 import { SUIT_TYPE_OPTIONS } from "@/lib/order-options";
+import { DEFAULT_GARMENT_PRICE_FALLBACK } from "@/lib/shop-settings";
 
 const settingsInputSchema = z.object({
   name: z.string().trim().min(1, "Shop Name is required").max(120, "Shop Name is too long"),
@@ -78,6 +79,30 @@ export async function updateShopSettings(formData: FormData): Promise<void> {
       continue;
     }
     defaultPrices[option.value] = trimmed;
+  }
+  // Upgrade — Prince Coat/Waistcoat default prices, same validation rule,
+  // same defaultPrices JSON bag, different (fixed, non-SuitType) keys.
+  // Falls back to the same DEFAULT_GARMENT_PRICE_FALLBACK a blank field
+  // would otherwise lose — the Settings form's own inputs already
+  // pre-fill from that fallback (see settings/page.tsx), so a blank
+  // submission here only happens if the admin deliberately cleared it,
+  // which should fall back rather than store an empty/invalid price.
+  const GARMENT_PRICE_LABELS: Record<keyof typeof DEFAULT_GARMENT_PRICE_FALLBACK, string> = {
+    PRINCE_COAT: "Prince Coat",
+    WAISTCOAT: "Waistcoat",
+  };
+  for (const key of Object.keys(DEFAULT_GARMENT_PRICE_FALLBACK) as (keyof typeof DEFAULT_GARMENT_PRICE_FALLBACK)[]) {
+    const raw = formData.get(`price.${key}`);
+    const trimmed = typeof raw === "string" ? raw.trim() : "";
+    if (trimmed === "") {
+      defaultPrices[key] = DEFAULT_GARMENT_PRICE_FALLBACK[key];
+      continue;
+    }
+    if (!MONEY_REGEX.test(trimmed)) {
+      priceErrors.push(`${GARMENT_PRICE_LABELS[key]} price must be a valid non-negative number`);
+      continue;
+    }
+    defaultPrices[key] = trimmed;
   }
   if (priceErrors.length > 0) {
     redirect(`/settings?error=${encodeURIComponent(priceErrors.join(" "))}`);

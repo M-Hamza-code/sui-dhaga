@@ -4,6 +4,7 @@
 // the server action passed in via `action`, already bound to the
 // customer's id by the caller.
 import { en } from "@/lib/locale";
+import { isBrowserOnline } from "@/lib/offline/online-status";
 export function DeleteCustomerButton({
   action,
   customerName,
@@ -15,6 +16,16 @@ export function DeleteCustomerButton({
     <form
       action={action}
       onSubmit={(event) => {
+        // Deletion has no offline-queue path at all (unlike every other
+        // mutation in this app) — a submit attempt while offline would
+        // otherwise just fail silently/unexplained at the network layer.
+        // This is a best-effort guard only, same caveat as every other
+        // isBrowserOnline() call site in this codebase.
+        if (!isBrowserOnline()) {
+          event.preventDefault();
+          window.alert(en.profile.deleteCustomerOfflineMessage);
+          return;
+        }
         // Step 55 — reworded: deleteCustomer (customer-actions.ts) now
         // also cascades to delete every one of this customer's orders
         // (and dependent order items/measurement snapshots), fixing the

@@ -28,7 +28,9 @@ export type BainType = "FULL_BAIN" | "HALF_GOL_BAIN" | "CUT_BAIN";
 export type CuffType = "NOK_DAR" | "CUT" | "GOL" | "FOLD";
 export type GheraType = "GOL" | "SEEDHA";
 export type OrderStatus = "PENDING" | "NEW" | "STITCHING" | "READY" | "DELIVERED";
-export type DesignOptionCategory = "POCKET" | "PATTI";
+export type DesignOptionCategory = "POCKET" | "PATTI" | "PANCHA";
+export type MeasurementMode = "KAMEEZ_SHALWAR" | "COAT";
+export type CoatGarmentSelection = "PRINCE_COAT" | "WAISTCOAT" | "BOTH";
 
 // ── Offline bookkeeping, not present on any server model ──────────────
 /** Per-record sync state for anything that can be created/edited offline. */
@@ -54,6 +56,19 @@ export interface LocalCustomer {
   createdById: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
+  /**
+   * The server's last CONFIRMED `updatedAt` for this record — distinct
+   * from `updatedAt` above, which bumps on every local edit before any
+   * sync. Only ever advances via (a) an initial-sync pull of a `"synced"`
+   * row, or (b) this device's own successful sync of an update to this
+   * record. This is what an UPDATE_CUSTOMER queue item's dispatch
+   * freezes as its concurrency token (see sync-engine.ts's
+   * prepareItemForDispatch) — never the mutable `updatedAt`, which would
+   * cause false conflicts for sequential offline edits made before the
+   * first one has synced. `null` only for a locally-created, not-yet-
+   * synced row (nothing confirmed by the server yet).
+   */
+  baseUpdatedAt: string | null;
   syncStatus: SyncStatus;
 }
 
@@ -63,6 +78,8 @@ export interface LocalMeasurement {
   length: string | null; // decimal fields kept as strings — never floating-point, matching
   shoulder: string | null; // the server's Decimal(6,2) columns and this app's existing
   sleeve: string | null; // "never do float math on a measurement/money value" rule
+  armHole: string | null;
+  kohni: string | null;
   neck: string | null;
   chest: string | null;
   waist: string | null;
@@ -77,11 +94,43 @@ export interface LocalMeasurement {
   syncStatus: SyncStatus;
 }
 
+export interface LocalCoatMeasurement {
+  id: string;
+  customerId: string; // strictly one-to-one with LocalCustomer, same rule as the server's @unique
+  coatLength: string | null;
+  coatShoulder: string | null;
+  coatChest: string | null;
+  coatWaist: string | null;
+  coatHipSeat: string | null;
+  coatSleeve: string | null;
+  coatArmHole: string | null;
+  coatBicep: string | null;
+  coatCuff: string | null;
+  coatNeck: string | null;
+  coatBackWidth: string | null;
+  coatFrontLength: string | null;
+  waistcoatLength: string | null;
+  waistcoatShoulder: string | null;
+  waistcoatChest: string | null;
+  waistcoatWaist: string | null;
+  waistcoatHipSeat: string | null;
+  waistcoatArmHole: string | null;
+  waistcoatNeck: string | null;
+  waistcoatBackWidth: string | null;
+  waistcoatFrontLength: string | null;
+  note: string | null;
+  updatedById: string | null;
+  updatedAt: string; // ISO
+  syncStatus: SyncStatus;
+}
+
 export interface LocalMeasurementSnapshot {
   id: string;
   length: string | null;
   shoulder: string | null;
   sleeve: string | null;
+  armHole: string | null;
+  kohni: string | null;
   neck: string | null;
   chest: string | null;
   waist: string | null;
@@ -90,6 +139,30 @@ export interface LocalMeasurementSnapshot {
   pancha: string | null;
   shalwarPocket: boolean | null;
   shalwarGheraReady: string | null;
+  // Prince Coat + Waistcoat — mirrors CoatMeasurement's own fields; see
+  // that model's schema.prisma comment for why the two groups never share
+  // a column and are never both populated on the same row.
+  coatLength: string | null;
+  coatShoulder: string | null;
+  coatChest: string | null;
+  coatWaist: string | null;
+  coatHipSeat: string | null;
+  coatSleeve: string | null;
+  coatArmHole: string | null;
+  coatBicep: string | null;
+  coatCuff: string | null;
+  coatNeck: string | null;
+  coatBackWidth: string | null;
+  coatFrontLength: string | null;
+  waistcoatLength: string | null;
+  waistcoatShoulder: string | null;
+  waistcoatChest: string | null;
+  waistcoatWaist: string | null;
+  waistcoatHipSeat: string | null;
+  waistcoatArmHole: string | null;
+  waistcoatNeck: string | null;
+  waistcoatBackWidth: string | null;
+  waistcoatFrontLength: string | null;
   note: string | null;
   isBackfilled: boolean;
   createdAt: string; // ISO — immutable once written, exactly like the server model
@@ -102,16 +175,22 @@ export interface LocalOrder {
   customerId: string;
   orderDate: string; // ISO
   deliveryDate: string | null; // ISO
-  suitType: SuitType;
+  /** Which measurement form this order's default block used — see MeasurementMode's own schema.prisma comment. */
+  measurementMode: MeasurementMode;
+  // Upgrade — all three nullable now: each can be deliberately "Not
+  // Specified", and a Coat-mode order has none of the five Suit & Styles
+  // fields set at all.
+  suitType: SuitType | null;
   // Step 63 — combined single choice: exactly one of these two is ever
   // non-null, never both, never neither (see order-actions.ts's own
   // comment on the same rule server-side).
   collarType: CollarType | null;
   bainType: BainType | null;
-  cuffType: CuffType;
-  gheraType: GheraType;
+  cuffType: CuffType | null;
+  gheraType: GheraType | null;
   pocketOptionId: string | null;
   pattiOptionId: string | null;
+  panchaOptionId: string | null;
   defaultMeasurementSnapshotId: string | null;
   // Kept as strings, same reasoning as the measurement decimals above —
   // and the same rule this app already enforces server-side (money.ts):
@@ -119,11 +198,16 @@ export interface LocalOrder {
   totalAmount: string;
   advanceAmount: string;
   balanceAmount: string;
+  /** The actual Prince Coat/Waistcoat per-unit price frozen for this order — see Order.princeCoatUnitPrice's own schema.prisma comment. Null when this order has no Coat/Waistcoat entries. */
+  princeCoatUnitPrice: string | null;
+  waistcoatUnitPrice: string | null;
   status: OrderStatus;
   createdById: string | null;
   note: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
+  /** The server's last CONFIRMED `updatedAt` for this order — see LocalCustomer.baseUpdatedAt's own comment for the full reasoning; same rule, same rename-free addition, applies here. */
+  baseUpdatedAt: string | null;
   syncStatus: SyncStatus;
 }
 
@@ -144,6 +228,10 @@ export interface LocalOrderItem {
   cuffType: CuffType | null;
   gheraType: GheraType | null;
   pocketOptionId: string | null;
+  /** "Ideally, an order should also support both garment types" — null = inherits Order.measurementMode (always true for position 1). */
+  measurementMode: MeasurementMode | null;
+  /** Explicit garment selection upgrade — see OrderItem.coatGarmentSelection's own schema.prisma comment. Only meaningful when this item's effective measurementMode is COAT; null for every Kameez/Shalwar item, and for any Coat item saved before this field existed (interpreted as BOTH, never re-derived from content). */
+  coatGarmentSelection: CoatGarmentSelection | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
   syncStatus: SyncStatus;
@@ -183,6 +271,7 @@ export type SyncOp =
   | "CREATE_CUSTOMER_AND_ORDER"
   | "UPDATE_CUSTOMER"
   | "SAVE_MEASUREMENT"
+  | "SAVE_COAT_MEASUREMENT"
   | "CREATE_ORDER"
   | "UPDATE_ORDER_STATUS"
   // Step 53 — Edit Order (measurements/styles/quantity/payment/delivery
@@ -212,6 +301,50 @@ export interface SyncQueueItem {
   idempotencyKey: string;
   /** Client clock at enqueue time — the ordering key within this one device/browser. */
   createdAt: number;
+  /**
+   * True once this item's `payload.baseUpdatedAt` has been frozen from a
+   * live read of its local record and persisted — happens exactly once,
+   * at this item's first actual dispatch attempt (see sync-engine.ts's
+   * prepareItemForDispatch). Every later automatic retry of the SAME
+   * item reuses that frozen value unchanged rather than re-reading the
+   * live record again — re-reading on every retry would let the
+   * operation's own canonical payload/hash silently drift across
+   * retries, which collides with UPDATE_ORDER's idempotency-receipt
+   * design (same operationId, different hash, is rejected as reuse).
+   * Resolving once at first dispatch (rather than at enqueue time) still
+   * correctly picks up an earlier queued item's completion, since FIFO
+   * processing means this item's first dispatch only happens after
+   * every earlier item has already been fully resolved.
+   * resolveConflictKeepLocal() sets this directly when it rebases the
+   * payload onto the server's reported baseline, since it already
+   * supplies an authoritative value itself.
+   */
+  baselineResolved?: boolean;
+  /**
+   * Set when this item could never be safely dispatched at all — the
+   * live local baseline could not be established (the record is
+   * missing) or the resolved baseline could not be persisted before
+   * sending. The network is never contacted in either case. Distinct
+   * from `conflictServerUpdatedAt` (that one means the SERVER rejected a
+   * real attempt) and from `idempotencyKeyReuse` (that one is a
+   * server-classified permanent rejection) — this one never leaves the
+   * browser. Excluded from retryFailedQueueItems() for the same reason
+   * conflicts are: the underlying cause won't resolve itself by blindly
+   * resending.
+   */
+  dispatchBlocked?: boolean;
+  /**
+   * Set ONLY when the server rejected this item with the explicit
+   * `idempotency-key-reuse` machine-readable code (HTTP 422) — this
+   * operationId already has a committed receipt under a DIFFERENT
+   * payload. This should never happen under correct client operation; it
+   * is a permanent, manual-review failure, never a stale-version
+   * conflict (so it must never set `conflictServerUpdatedAt` or appear
+   * in readConflicts()/resolveConflictKeepLocal/resolveConflictUseServer)
+   * and never auto- or manually-retried unchanged, since resending the
+   * identical frozen payload would only ever fail the same way again.
+   */
+  idempotencyKeyReuse?: boolean;
   /**
    * Optional — which of this item's own payload fields are ids that
    * still belong to another not-yet-synced queue item (e.g. an order's

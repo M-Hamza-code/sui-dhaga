@@ -66,6 +66,13 @@ export const GHERA_TYPE_UR: Record<GheraType, string> = {
 export const WORK_ORDER_UR = {
   kameezHeading: "قمیض",
   shalwarHeading: "شلوار",
+  // Added for the Prince Coat/Waistcoat upgrade — best-effort tailoring
+  // terminology, same honesty convention as this file's own header
+  // comment on Pocket (not sourced from the original design brief, which
+  // predates these garments). Matches the English section headings
+  // (en.orderForm.princeCoatMeasurements/waistcoatMeasurements) 1:1.
+  princeCoatHeading: "پرنس کوٹ",
+  waistcoatHeading: "ویسٹ کوٹ",
   deliveryDateLabel: "تاریخ واپسی",
   yes: "ہاں",
   no: "نہیں",

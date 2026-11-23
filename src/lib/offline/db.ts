@@ -15,6 +15,7 @@ import Dexie, { type Table } from "dexie";
 import type {
   LocalCustomer,
   LocalMeasurement,
+  LocalCoatMeasurement,
   LocalMeasurementSnapshot,
   LocalOrder,
   LocalOrderItem,
@@ -24,11 +25,12 @@ import type {
   SyncMetaItem,
 } from "./types";
 
-const DATABASE_NAME = "sui-dhaga-offline";
+export const DATABASE_NAME = "sui-dhaga-offline";
 
 class SuiDhagaOfflineDatabase extends Dexie {
   customers!: Table<LocalCustomer, string>;
   measurements!: Table<LocalMeasurement, string>;
+  coatMeasurements!: Table<LocalCoatMeasurement, string>;
   measurementSnapshots!: Table<LocalMeasurementSnapshot, string>;
   orders!: Table<LocalOrder, string>;
   orderItems!: Table<LocalOrderItem, string>;
@@ -115,9 +117,15 @@ class SuiDhagaOfflineDatabase extends Dexie {
       syncMeta: "key",
     });
 
-    // Future phases: add
-    //   this.version(2).stores({ ... }).upgrade(tx => { ... });
-    // here. Never edit the version(1) block above once it has shipped.
+    // Version 2 — Prince Coat/Waistcoat Measurements upgrade. Purely
+    // additive: only the new table is listed here (Dexie carries over
+    // every version(1) table's schema unchanged when a later version
+    // doesn't mention it) — same customerId-unique-index shape as the
+    // existing `measurements` table, since CoatMeasurement is its exact
+    // Coat-mode sibling server-side.
+    this.version(2).stores({
+      coatMeasurements: "id, &customerId, syncStatus",
+    });
   }
 }
 
@@ -134,9 +142,48 @@ class SuiDhagaOfflineDatabase extends Dexie {
 // itself touch indexedDB, throw, or break a build.
 let instance: SuiDhagaOfflineDatabase | null = null;
 
-/** True only when running in a real browser with IndexedDB available. */
+// Follow-up fix — set for the remainder of this page's life once a full
+// local-data reset (reset-local-data-button.tsx) begins. Every existing
+// caller in this codebase already checks isOfflineDbAvailable() before
+// touching Dexie (confirmed — none call getOfflineDb() without it), so
+// flipping this one flag is enough to stop EVERY one of them, with no
+// per-call-site changes: in particular, SyncStatusIndicator's own
+// 3-second poll (readSyncStatusSummary -> isOfflineDbAvailable) can no
+// longer reopen a connection to the database the reset is in the middle
+// of deleting. Without this, that poll firing mid-delete reliably
+// produces IndexedDB's own `blocked` outcome — the previous bug: the
+// delete looked like it succeeded, but a fresh connection the poll had
+// just (re-)opened kept the real deletion pending indefinitely.
+let resetInProgress = false;
+
+/** Called once, as the very first step of a full local-data reset — before closing or deleting anything — so no other mounted component can reopen a connection during the window that follows. */
+export function beginLocalDataReset(): void {
+  resetInProgress = true;
+}
+
+/** Only for the reset's own failure path — if the reset couldn't complete and the page is NOT navigating away, normal Dexie access must resume for the rest of this page's life. Never called on success (the page is about to unload anyway). */
+export function cancelLocalDataReset(): void {
+  resetInProgress = false;
+}
+
+/** True only when running in a real browser with IndexedDB available, and no local-data reset is currently in progress on this page. */
 export function isOfflineDbAvailable(): boolean {
-  return typeof window !== "undefined" && typeof indexedDB !== "undefined";
+  return !resetInProgress && typeof window !== "undefined" && typeof indexedDB !== "undefined";
+}
+
+/**
+ * Turns a thrown/rejected error from a Dexie transaction into a message
+ * safe to show the tailor directly. `isOfflineDbAvailable()` can only
+ * check that the `indexedDB` global exists — it can't detect a
+ * private-browsing restriction, an exhausted storage quota, or a
+ * corrupted database, all of which only surface here, when a real
+ * transaction actually runs.
+ */
+export function describeOfflineStorageError(error: unknown): string {
+  if (error instanceof DOMException && error.name === "QuotaExceededError") {
+    return "This device's storage is full, so this couldn't be saved. Please free up some space and try again — nothing was lost, it's still on screen.";
+  }
+  return "This device couldn't save this right now (private browsing or a storage issue). Nothing was lost — it's still on screen. Please try again.";
 }
 
 /**

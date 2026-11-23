@@ -18,13 +18,14 @@
 // permanently fails (rejected), the follow-up UPDATE will itself fail
 // with "not-found" against the server — visible and preserved (see
 // processSyncQueue below), never silently lost or corrupted.
-import { getOfflineDb, isOfflineDbAvailable } from "./db";
+import { getOfflineDb, isOfflineDbAvailable, describeOfflineStorageError } from "./db";
 import { runInitialSync } from "./initial-sync";
 import type {
   SyncQueueItem,
   SyncOp,
   LocalCustomer,
   LocalMeasurement,
+  LocalCoatMeasurement,
   LocalOrder,
   LocalOrderItem,
   SuitType,
@@ -32,6 +33,8 @@ import type {
   BainType,
   CuffType,
   GheraType,
+  MeasurementMode,
+  CoatGarmentSelection,
 } from "./types";
 // customer-validation.ts is a plain module (no "use server", no Prisma
 // import — confirmed in the approved Phase 1 architecture's own
@@ -44,7 +47,9 @@ import { customerInputSchema } from "@/lib/customer-validation";
 // Phase 1 validation-boundary classification. Reused here the same way
 // customerInputSchema is above — not a second copy of either rule.
 import { measurementInputSchema, shalwarPocketToBoolean } from "@/lib/measurement-value";
-import { MONEY_REGEX, calculateBalance } from "@/lib/money";
+import { coatMeasurementInputSchema } from "@/lib/coat-measurement-value";
+import { ALL_COAT_FIELD_KEYS } from "@/lib/coat-measurement-fields";
+import { MONEY_REGEX, calculateBalance, isAdvanceWithinTotal } from "@/lib/money";
 
 // The four statuses an order can actually be moved to from the UI —
 // same set order-status-form.tsx's own OPTIONS array already uses;
@@ -60,10 +65,19 @@ export function isValidSelectableOrderStatus(value: unknown): value is Selectabl
   return VALID_ORDER_STATUS_VALUES.includes(value as SelectableOrderStatus);
 }
 
+/** What a caller actually supplies — unchanged from before this upgrade, so OrderStatusForm/the dev diagnostic page need no changes. */
+export interface OrderStatusUpdateInput {
+  customerId: string;
+  orderId: string;
+  status: SelectableOrderStatus;
+}
+
 export interface UpdateOrderStatusPayload {
   customerId: string;
   orderId: string;
   status: SelectableOrderStatus;
+  /** The local order's own confirmed baseline at enqueue time — frozen for real at first dispatch (prepareItemForDispatch), same rule as UPDATE_CUSTOMER/UPDATE_ORDER. */
+  baseUpdatedAt: string;
 }
 
 function generateIdempotencyKey(): string {
@@ -77,20 +91,38 @@ function generateIdempotencyKey(): string {
 
 export interface EnqueueResult {
   queued: boolean;
-  reason?: "invalid-status" | "no-indexeddb";
+  reason?: "invalid-status" | "no-indexeddb" | "storage-error" | "unknown-baseline";
+  message?: string;
 }
 
 /**
  * Local-first write for an order status change (Phase 4 §3/§9): updates
- * the local order row (if the local mirror already has one — see the
- * inline comment below for why it's fine if it doesn't yet) and inserts
- * a syncQueue item, in ONE Dexie transaction. If the browser crashes
- * between "the order looks changed locally" and "a queue item exists to
- * actually deliver that change", this transaction guarantees that state
- * is never reached — both writes commit together, or neither does.
+ * the local order row and inserts a syncQueue item, in ONE Dexie
+ * transaction. If the browser crashes between "the order looks changed
+ * locally" and "a queue item exists to actually deliver that change",
+ * this transaction guarantees that state is never reached — both writes
+ * commit together, or neither does.
+ *
+ * Follow-up fix — this used to proceed even when the local mirror had no
+ * row for this order at all (the old comment here called that "harmless"
+ * on the theory that nothing read the local row for display). That
+ * theory was wrong: prepareItemForDispatch()'s own baseline re-resolution
+ * (readLiveBaseline) depends on this row existing with a real
+ * baseUpdatedAt, and fails CLOSED, permanently, with no retry, if it
+ * doesn't — exactly the "Could not establish a safe version baseline"
+ * dispatchBlocked state. The one confirmed way to reach that state: an
+ * order created together with a brand-new customer (order-form.tsx's
+ * `createCustomerAndOrder` Server Action, mode="new") is a plain online
+ * write with no corresponding enqueueCreateOrder() call at all, so the
+ * local `orders` table never gets a row for it until the next full page
+ * load's initial sync pull. Rather than relax the dispatch-time safety
+ * check (which would risk a real stale overwrite), this stops the
+ * doomed item from ever being queued in the first place — failing
+ * immediately, visibly, and recoverably instead of permanently and
+ * silently much later.
  */
-export async function enqueueOrderStatusUpdate(payload: UpdateOrderStatusPayload): Promise<EnqueueResult> {
-  if (!isValidSelectableOrderStatus(payload.status)) {
+export async function enqueueOrderStatusUpdate(input: OrderStatusUpdateInput): Promise<EnqueueResult> {
+  if (!isValidSelectableOrderStatus(input.status)) {
     return { queued: false, reason: "invalid-status" };
   }
   if (!isOfflineDbAvailable()) {
@@ -98,30 +130,39 @@ export async function enqueueOrderStatusUpdate(payload: UpdateOrderStatusPayload
   }
 
   const db = getOfflineDb();
+
+  const existingOrder = await db.orders.get(input.orderId);
+  const baseUpdatedAt = existingOrder?.baseUpdatedAt;
+  if (!baseUpdatedAt) {
+    return {
+      queued: false,
+      reason: "unknown-baseline",
+      message: "This order hasn't finished loading on this device yet. Please refresh the page and try again.",
+    };
+  }
+
   const idempotencyKey = generateIdempotencyKey();
 
-  await db.transaction("rw", [db.orders, db.syncQueue], async () => {
-    // Table.update() is a silent no-op (resolves to 0, never throws) if
-    // this orderId isn't in the local mirror yet — e.g. Phase 3's
-    // initial sync hasn't completed this session, or ran before this
-    // order existed. That's harmless in this phase specifically: nothing
-    // yet reads this local `orders` row for display (the Order Board and
-    // Order Detail pages are still fully server-rendered), so the only
-    // thing that actually matters — the queue item below, which is what
-    // delivers the change to the server — is created unconditionally.
-    await db.orders.update(payload.orderId, { status: payload.status, syncStatus: "pending" });
+  try {
+    await db.transaction("rw", [db.orders, db.syncQueue], async () => {
+      await db.orders.update(input.orderId, { status: input.status, syncStatus: "pending" });
 
-    const item: SyncQueueItem = {
-      op: "UPDATE_ORDER_STATUS",
-      payload,
-      status: "pending",
-      attempts: 0,
-      lastError: null,
-      idempotencyKey,
-      createdAt: Date.now(),
-    };
-    await db.syncQueue.add(item);
-  });
+      const payload: UpdateOrderStatusPayload = { customerId: input.customerId, orderId: input.orderId, status: input.status, baseUpdatedAt };
+      const item: SyncQueueItem = {
+        op: "UPDATE_ORDER_STATUS",
+        payload,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        idempotencyKey,
+        createdAt: Date.now(),
+        baselineResolved: false,
+      };
+      await db.syncQueue.add(item);
+    });
+  } catch (error) {
+    return { queued: false, reason: "storage-error", message: describeOfflineStorageError(error) };
+  }
 
   return { queued: true };
 }
@@ -149,7 +190,7 @@ export interface UpdateCustomerPayload {
 export interface CustomerEnqueueResult {
   queued: boolean;
   id?: string;
-  reason?: "invalid-input" | "no-indexeddb";
+  reason?: "invalid-input" | "no-indexeddb" | "storage-error";
   message?: string;
 }
 
@@ -187,40 +228,45 @@ export async function enqueueCreateCustomer(input: {
   const idempotencyKey = generateIdempotencyKey();
   const now = new Date().toISOString();
 
-  await db.transaction("rw", [db.customers, db.syncQueue], async () => {
-    const row: LocalCustomer = {
-      id,
-      customerCode: null, // never guessed locally — server-assigned only (Phase 5 §E)
-      name: parsed.data.name,
-      phonePrimary: parsed.data.phonePrimary,
-      phoneSecondary: parsed.data.phoneSecondary ?? null,
-      address: parsed.data.address ?? null,
-      deletedAt: null,
-      createdById: null, // stamped server-side from the session at sync time
-      createdAt: now,
-      updatedAt: now,
-      syncStatus: "pending",
-    };
-    await db.customers.add(row);
+  try {
+    await db.transaction("rw", [db.customers, db.syncQueue], async () => {
+      const row: LocalCustomer = {
+        id,
+        customerCode: null, // never guessed locally — server-assigned only (Phase 5 §E)
+        name: parsed.data.name,
+        phonePrimary: parsed.data.phonePrimary,
+        phoneSecondary: parsed.data.phoneSecondary ?? null,
+        address: parsed.data.address ?? null,
+        deletedAt: null,
+        createdById: null, // stamped server-side from the session at sync time
+        createdAt: now,
+        updatedAt: now,
+        baseUpdatedAt: null, // nothing confirmed by the server yet — this device's own CREATE_CUSTOMER sync could set it, but that endpoint doesn't currently return updatedAt (out of scope here)
+        syncStatus: "pending",
+      };
+      await db.customers.add(row);
 
-    const payload: CreateCustomerPayload = {
-      id,
-      name: row.name,
-      phonePrimary: row.phonePrimary,
-      phoneSecondary: row.phoneSecondary,
-      address: row.address,
-    };
-    const item: SyncQueueItem = {
-      op: "CREATE_CUSTOMER",
-      payload,
-      status: "pending",
-      attempts: 0,
-      lastError: null,
-      idempotencyKey,
-      createdAt: Date.now(),
-    };
-    await db.syncQueue.add(item);
-  });
+      const payload: CreateCustomerPayload = {
+        id,
+        name: row.name,
+        phonePrimary: row.phonePrimary,
+        phoneSecondary: row.phoneSecondary,
+        address: row.address,
+      };
+      const item: SyncQueueItem = {
+        op: "CREATE_CUSTOMER",
+        payload,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        idempotencyKey,
+        createdAt: Date.now(),
+      };
+      await db.syncQueue.add(item);
+    });
+  } catch (error) {
+    return { queued: false, reason: "storage-error", message: describeOfflineStorageError(error) };
+  }
 
   return { queued: true, id };
 }
@@ -254,41 +300,46 @@ export async function enqueueUpdateCustomer(
   const idempotencyKey = generateIdempotencyKey();
   const now = new Date().toISOString();
 
-  await db.transaction("rw", [db.customers, db.syncQueue], async () => {
-    const existing = await db.customers.get(customerId);
-    // If this customer's own row hasn't reached the local mirror yet
-    // (e.g. neither Phase 3's initial sync nor a prior offline create
-    // has populated it), there's no known local baseline — `now` is used
-    // as a harmless placeholder; the server's own existence check
-    // ("not-found") is still the authoritative guard in that case.
-    const baseUpdatedAt = existing?.updatedAt ?? now;
+  try {
+    await db.transaction("rw", [db.customers, db.syncQueue], async () => {
+      const existing = await db.customers.get(customerId);
+      // Placeholder only — prepareItemForDispatch() re-resolves this from
+      // the live local record at first dispatch and freezes it there, so
+      // this enqueue-time value is never actually sent. Still computed
+      // defensively (preferring the confirmed baseUpdatedAt over the
+      // mutable updatedAt) in case dispatch ever needs a last-resort value.
+      const baseUpdatedAt = existing?.baseUpdatedAt ?? existing?.updatedAt ?? now;
 
-    const name = parsed.data.name;
-    const phonePrimary = parsed.data.phonePrimary;
-    const phoneSecondary = parsed.data.phoneSecondary ?? null;
-    const address = parsed.data.address ?? null;
+      const name = parsed.data.name;
+      const phonePrimary = parsed.data.phonePrimary;
+      const phoneSecondary = parsed.data.phoneSecondary ?? null;
+      const address = parsed.data.address ?? null;
 
-    await db.customers.update(customerId, {
-      name,
-      phonePrimary,
-      phoneSecondary,
-      address,
-      updatedAt: now,
-      syncStatus: "pending",
+      await db.customers.update(customerId, {
+        name,
+        phonePrimary,
+        phoneSecondary,
+        address,
+        updatedAt: now,
+        syncStatus: "pending",
+      });
+
+      const payload: UpdateCustomerPayload = { customerId, name, phonePrimary, phoneSecondary, address, baseUpdatedAt };
+      const item: SyncQueueItem = {
+        op: "UPDATE_CUSTOMER",
+        payload,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        idempotencyKey,
+        createdAt: Date.now(),
+        baselineResolved: false,
+      };
+      await db.syncQueue.add(item);
     });
-
-    const payload: UpdateCustomerPayload = { customerId, name, phonePrimary, phoneSecondary, address, baseUpdatedAt };
-    const item: SyncQueueItem = {
-      op: "UPDATE_CUSTOMER",
-      payload,
-      status: "pending",
-      attempts: 0,
-      lastError: null,
-      idempotencyKey,
-      createdAt: Date.now(),
-    };
-    await db.syncQueue.add(item);
-  });
+  } catch (error) {
+    return { queued: false, reason: "storage-error", message: describeOfflineStorageError(error) };
+  }
 
   return { queued: true, id: customerId };
 }
@@ -300,6 +351,8 @@ export interface SaveMeasurementPayload {
   length: string;
   shoulder: string;
   sleeve: string;
+  armHole: string;
+  kohni: string;
   neck: string;
   chest: string;
   waist: string;
@@ -330,6 +383,8 @@ export async function enqueueSaveMeasurement(
     length: string;
     shoulder: string;
     sleeve: string;
+    armHole: string;
+    kohni: string;
     neck: string;
     chest: string;
     waist: string;
@@ -349,6 +404,8 @@ export async function enqueueSaveMeasurement(
     length: input.length || undefined,
     shoulder: input.shoulder || undefined,
     sleeve: input.sleeve || undefined,
+    armHole: input.armHole || undefined,
+    kohni: input.kohni || undefined,
     neck: input.neck || undefined,
     chest: input.chest || undefined,
     waist: input.waist || undefined,
@@ -369,55 +426,131 @@ export async function enqueueSaveMeasurement(
   const data = parsed.data;
   const shalwarPocket = shalwarPocketToBoolean(data.shalwarPocket);
 
-  await db.transaction("rw", [db.measurements, db.syncQueue], async () => {
-    const existing = await db.measurements.where("customerId").equals(customerId).first();
-    const row: LocalMeasurement = {
-      id: existing?.id ?? customerId,
-      customerId,
-      length: data.length ?? null,
-      shoulder: data.shoulder ?? null,
-      sleeve: data.sleeve ?? null,
-      neck: data.neck ?? null,
-      chest: data.chest ?? null,
-      waist: data.waist ?? null,
-      hem: data.hem ?? null,
-      shalwarLength: data.shalwarLength ?? null,
-      pancha: data.pancha ?? null,
-      shalwarPocket,
-      shalwarGheraReady: data.shalwarGheraReady ?? null,
-      note: data.note ?? null,
-      updatedById: null, // stamped server-side from the session at sync time
-      updatedAt: now,
-      syncStatus: "pending",
-    };
-    await db.measurements.put(row);
+  try {
+    await db.transaction("rw", [db.measurements, db.syncQueue], async () => {
+      const existing = await db.measurements.where("customerId").equals(customerId).first();
+      const row: LocalMeasurement = {
+        id: existing?.id ?? customerId,
+        customerId,
+        length: data.length ?? null,
+        shoulder: data.shoulder ?? null,
+        sleeve: data.sleeve ?? null,
+        armHole: data.armHole ?? null,
+        kohni: data.kohni ?? null,
+        neck: data.neck ?? null,
+        chest: data.chest ?? null,
+        waist: data.waist ?? null,
+        hem: data.hem ?? null,
+        shalwarLength: data.shalwarLength ?? null,
+        pancha: data.pancha ?? null,
+        shalwarPocket,
+        shalwarGheraReady: data.shalwarGheraReady ?? null,
+        note: data.note ?? null,
+        updatedById: null, // stamped server-side from the session at sync time
+        updatedAt: now,
+        syncStatus: "pending",
+      };
+      await db.measurements.put(row);
 
-    const payload: SaveMeasurementPayload = {
-      customerId,
-      length: data.length ?? "",
-      shoulder: data.shoulder ?? "",
-      sleeve: data.sleeve ?? "",
-      neck: data.neck ?? "",
-      chest: data.chest ?? "",
-      waist: data.waist ?? "",
-      hem: data.hem ?? "",
-      shalwarLength: data.shalwarLength ?? "",
-      pancha: data.pancha ?? "",
-      shalwarGheraReady: data.shalwarGheraReady ?? "",
-      shalwarPocket: data.shalwarPocket,
-      note: data.note ?? "",
-    };
-    const item: SyncQueueItem = {
-      op: "SAVE_MEASUREMENT",
-      payload,
-      status: "pending",
-      attempts: 0,
-      lastError: null,
-      idempotencyKey,
-      createdAt: Date.now(),
-    };
-    await db.syncQueue.add(item);
-  });
+      const payload: SaveMeasurementPayload = {
+        customerId,
+        length: data.length ?? "",
+        shoulder: data.shoulder ?? "",
+        sleeve: data.sleeve ?? "",
+        armHole: data.armHole ?? "",
+        kohni: data.kohni ?? "",
+        neck: data.neck ?? "",
+        chest: data.chest ?? "",
+        waist: data.waist ?? "",
+        hem: data.hem ?? "",
+        shalwarLength: data.shalwarLength ?? "",
+        pancha: data.pancha ?? "",
+        shalwarGheraReady: data.shalwarGheraReady ?? "",
+        shalwarPocket: data.shalwarPocket,
+        note: data.note ?? "",
+      };
+      const item: SyncQueueItem = {
+        op: "SAVE_MEASUREMENT",
+        payload,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        idempotencyKey,
+        createdAt: Date.now(),
+      };
+      await db.syncQueue.add(item);
+    });
+  } catch (error) {
+    return { queued: false, reason: "storage-error", message: describeOfflineStorageError(error) };
+  }
+
+  return { queued: true, id: customerId };
+}
+
+// ── Coat measurement save ───────────────────────────────────────────────
+
+export interface SaveCoatMeasurementPayload {
+  customerId: string;
+  [key: string]: string;
+}
+
+/** Coat-mode sibling of enqueueSaveMeasurement above — same local-first shape, same reasoning, mirrored field-by-field via ALL_COAT_FIELD_KEYS instead of hand-listing each one. */
+export async function enqueueSaveCoatMeasurement(
+  customerId: string,
+  input: Record<string, string> & { note: string }
+): Promise<CustomerEnqueueResult> {
+  if (!isOfflineDbAvailable()) {
+    return { queued: false, reason: "no-indexeddb" };
+  }
+
+  const raw: Record<string, string | undefined> = {};
+  for (const key of ALL_COAT_FIELD_KEYS) {
+    raw[key] = input[key] || undefined;
+  }
+  const parsed = coatMeasurementInputSchema.safeParse({ ...raw, note: input.note || undefined });
+  if (!parsed.success) {
+    return { queued: false, reason: "invalid-input", message: parsed.error.issues.map((i) => i.message).join(" ") };
+  }
+
+  const db = getOfflineDb();
+  const idempotencyKey = generateIdempotencyKey();
+  const now = new Date().toISOString();
+  const data = parsed.data as Record<string, string | undefined>;
+
+  try {
+    await db.transaction("rw", [db.coatMeasurements, db.syncQueue], async () => {
+      const existing = await db.coatMeasurements.where("customerId").equals(customerId).first();
+      const row: LocalCoatMeasurement = {
+        id: existing?.id ?? customerId,
+        customerId,
+        note: data.note ?? null,
+        updatedById: null,
+        updatedAt: now,
+        syncStatus: "pending",
+      } as LocalCoatMeasurement;
+      for (const key of ALL_COAT_FIELD_KEYS) {
+        (row as unknown as Record<string, string | null>)[key] = data[key] ?? null;
+      }
+      await db.coatMeasurements.put(row);
+
+      const payload: SaveCoatMeasurementPayload = { customerId, note: data.note ?? "" };
+      for (const key of ALL_COAT_FIELD_KEYS) {
+        payload[key] = data[key] ?? "";
+      }
+      const item: SyncQueueItem = {
+        op: "SAVE_COAT_MEASUREMENT",
+        payload,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        idempotencyKey,
+        createdAt: Date.now(),
+      };
+      await db.syncQueue.add(item);
+    });
+  } catch (error) {
+    return { queued: false, reason: "storage-error", message: describeOfflineStorageError(error) };
+  }
 
   return { queued: true, id: customerId };
 }
@@ -434,7 +567,7 @@ export interface CreateOrderPayload {
 export interface OrderEnqueueResult {
   queued: boolean;
   id?: string;
-  reason?: "invalid-input" | "no-indexeddb";
+  reason?: "invalid-input" | "no-indexeddb" | "storage-error";
   message?: string;
 }
 
@@ -472,17 +605,31 @@ export async function enqueueCreateOrder(customerId: string, formData: FormData)
   // Step 63 — Collar/Bain removed from the blanket REQUIRED list: they're
   // now a combined choice (exactly one, not both) rather than two
   // independently-required fields — checked separately just below.
-  const REQUIRED = ["orderDate", "suitType", "cuffType", "gheraType", "totalAmount", "advanceAmount"];
+  // Upgrade — suitType/cuffType/gheraType removed too: each can now be
+  // deliberately "Not Specified", and a Coat/Waistcoat-only order
+  // (kameezQuantity 0) submits none of them at all (see order-actions.ts's
+  // own comment on the same kameezQuantity-conditional rule server-side)
+  // — this local fast-feedback check must never be stricter than the
+  // server it's only a preview of.
+  const REQUIRED = ["orderDate", "totalAmount", "advanceAmount"];
   for (const key of REQUIRED) {
     if (!fields[key] || fields[key].trim() === "") {
       return { queued: false, reason: "invalid-input", message: `${key} is required` };
     }
   }
-  if ((fields.collarType ? 1 : 0) + (fields.bainType ? 1 : 0) !== 1) {
+  // Independent sections upgrade — Order.measurementMode is never
+  // actually submitted by the current form any more (it always defaults
+  // to KAMEEZ_SHALWAR server-side); the real per-position type is
+  // entirely determined by kameezQuantity vs. coatQuantity.
+  const kameezQuantity = Math.max(0, Math.min(20, parseInt(fields.kameezQuantity, 10) || 0));
+  if (kameezQuantity > 0 && (fields.collarType ? 1 : 0) + (fields.bainType ? 1 : 0) !== 1) {
     return { queued: false, reason: "invalid-input", message: "Select either a Collar or a Bain (not both, and not neither)" };
   }
   if (!MONEY_REGEX.test(fields.totalAmount) || !MONEY_REGEX.test(fields.advanceAmount)) {
     return { queued: false, reason: "invalid-input", message: "Total and Advance Amount must be valid non-negative numbers" };
+  }
+  if (!isAdvanceWithinTotal(fields.totalAmount, fields.advanceAmount)) {
+    return { queued: false, reason: "invalid-input", message: "Advance Amount cannot exceed Total Amount" };
   }
 
   const db = getOfflineDb();
@@ -491,45 +638,54 @@ export async function enqueueCreateOrder(customerId: string, formData: FormData)
   const now = new Date().toISOString();
   const balanceAmount = calculateBalance(fields.totalAmount, fields.advanceAmount);
 
-  await db.transaction("rw", [db.orders, db.syncQueue], async () => {
-    const row: LocalOrder = {
-      id,
-      orderNumber: null, // never guessed locally — server-assigned only (Phase 6 §B)
-      customerId,
-      orderDate: new Date(fields.orderDate).toISOString(),
-      deliveryDate: fields.deliveryDate ? new Date(fields.deliveryDate).toISOString() : null,
-      suitType: fields.suitType as SuitType,
-      collarType: (fields.collarType || null) as CollarType | null,
-      bainType: (fields.bainType || null) as BainType | null,
-      cuffType: fields.cuffType as CuffType,
-      gheraType: fields.gheraType as GheraType,
-      pocketOptionId: fields.pocketOptionId || null,
-      pattiOptionId: fields.pattiOptionId || null,
-      defaultMeasurementSnapshotId: null,
-      totalAmount: fields.totalAmount,
-      advanceAmount: fields.advanceAmount,
-      balanceAmount,
-      status: "NEW",
-      createdById: null, // stamped server-side from the session at sync time
-      note: fields.note || null,
-      createdAt: now,
-      updatedAt: now,
-      syncStatus: "pending",
-    };
-    await db.orders.add(row);
+  try {
+    await db.transaction("rw", [db.orders, db.syncQueue], async () => {
+      const row: LocalOrder = {
+        id,
+        orderNumber: null, // never guessed locally — server-assigned only (Phase 6 §B)
+        customerId,
+        orderDate: new Date(fields.orderDate).toISOString(),
+        deliveryDate: fields.deliveryDate ? new Date(fields.deliveryDate).toISOString() : null,
+        measurementMode: "KAMEEZ_SHALWAR",
+        suitType: (fields.suitType || null) as SuitType | null,
+        collarType: (fields.collarType || null) as CollarType | null,
+        bainType: (fields.bainType || null) as BainType | null,
+        cuffType: (fields.cuffType || null) as CuffType | null,
+        gheraType: (fields.gheraType || null) as GheraType | null,
+        pocketOptionId: fields.pocketOptionId || null,
+        pattiOptionId: fields.pattiOptionId || null,
+        panchaOptionId: fields.panchaOptionId || null,
+        defaultMeasurementSnapshotId: null,
+        totalAmount: fields.totalAmount,
+        advanceAmount: fields.advanceAmount,
+        balanceAmount,
+        princeCoatUnitPrice: fields.princeCoatUnitPrice || null,
+        waistcoatUnitPrice: fields.waistcoatUnitPrice || null,
+        status: "NEW",
+        createdById: null, // stamped server-side from the session at sync time
+        note: fields.note || null,
+        createdAt: now,
+        updatedAt: now,
+        baseUpdatedAt: null, // nothing confirmed by the server yet — this device's own CREATE_ORDER sync sets it (see the success-handler branch below)
+        syncStatus: "pending",
+      };
+      await db.orders.add(row);
 
-    const payload: CreateOrderPayload = { id, customerId, fields };
-    const item: SyncQueueItem = {
-      op: "CREATE_ORDER",
-      payload,
-      status: "pending",
-      attempts: 0,
-      lastError: null,
-      idempotencyKey,
-      createdAt: Date.now(),
-    };
-    await db.syncQueue.add(item);
-  });
+      const payload: CreateOrderPayload = { id, customerId, fields };
+      const item: SyncQueueItem = {
+        op: "CREATE_ORDER",
+        payload,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        idempotencyKey,
+        createdAt: Date.now(),
+      };
+      await db.syncQueue.add(item);
+    });
+  } catch (error) {
+    return { queued: false, reason: "storage-error", message: describeOfflineStorageError(error) };
+  }
 
   return { queued: true, id };
 }
@@ -572,105 +728,140 @@ export async function enqueueUpdateOrder(customerId: string, orderId: string, fo
     if (typeof value === "string") fields[key] = value;
   });
 
-  // Step 63 — same REQUIRED-list adjustment as enqueueCreateOrder above.
-  const REQUIRED = ["orderDate", "suitType", "cuffType", "gheraType", "totalAmount", "advanceAmount"];
+  // Step 63 / Upgrade — same REQUIRED-list adjustment as enqueueCreateOrder above.
+  const REQUIRED = ["orderDate", "totalAmount", "advanceAmount"];
   for (const key of REQUIRED) {
     if (!fields[key] || fields[key].trim() === "") {
       return { queued: false, reason: "invalid-input", message: `${key} is required` };
     }
   }
-  if ((fields.collarType ? 1 : 0) + (fields.bainType ? 1 : 0) !== 1) {
+  const kameezQuantity = Math.max(0, Math.min(20, parseInt(fields.kameezQuantity, 10) || 0));
+  // Three-tab Order Type redesign — the form now submits two separate
+  // fields (princeCoatQuantity/waistcoatQuantity), no more single
+  // combined "coatQuantity" — same fix as order-actions.ts's own
+  // validateOrderInput, kept in sync since this is a local-first preview
+  // of that same validation.
+  const princeCoatQuantity = Math.max(0, Math.min(20, parseInt(fields.princeCoatQuantity, 10) || 0));
+  const waistcoatQuantity = Math.max(0, Math.min(20, parseInt(fields.waistcoatQuantity, 10) || 0));
+  const coatQuantity = princeCoatQuantity + waistcoatQuantity;
+  if (kameezQuantity > 0 && (fields.collarType ? 1 : 0) + (fields.bainType ? 1 : 0) !== 1) {
     return { queued: false, reason: "invalid-input", message: "Select either a Collar or a Bain (not both, and not neither)" };
   }
   if (!MONEY_REGEX.test(fields.totalAmount) || !MONEY_REGEX.test(fields.advanceAmount)) {
     return { queued: false, reason: "invalid-input", message: "Total and Advance Amount must be valid non-negative numbers" };
   }
-  const quantity = Math.max(1, Math.min(20, parseInt(fields.quantity, 10) || 1));
+  if (!isAdvanceWithinTotal(fields.totalAmount, fields.advanceAmount)) {
+    return { queued: false, reason: "invalid-input", message: "Advance Amount cannot exceed Total Amount" };
+  }
+  // Independent sections upgrade — the combined position count across
+  // all three sections, same as the server's own `quantity` (order-actions.ts).
+  const quantity = kameezQuantity + coatQuantity;
 
   const db = getOfflineDb();
   const idempotencyKey = generateIdempotencyKey();
   const now = new Date().toISOString();
   const balanceAmount = calculateBalance(fields.totalAmount, fields.advanceAmount);
 
-  await db.transaction("rw", [db.orders, db.orderItems, db.syncQueue], async () => {
-    const existingOrder = await db.orders.get(orderId);
-    // Same "no known local baseline" fallback UpdateCustomerPayload
-    // already uses — the server's own existence/version checks remain
-    // the authoritative guard regardless.
-    const baseUpdatedAt = existingOrder?.updatedAt ?? now;
+  try {
+    await db.transaction("rw", [db.orders, db.orderItems, db.syncQueue], async () => {
+      const existingOrder = await db.orders.get(orderId);
+      // Placeholder only — same reasoning as enqueueUpdateCustomer's own
+      // comment above: prepareItemForDispatch() re-resolves and freezes
+      // the real value from the live local record at first dispatch.
+      const baseUpdatedAt = existingOrder?.baseUpdatedAt ?? existingOrder?.updatedAt ?? now;
 
-    // Table.update() is a silent no-op if this order isn't in the local
-    // mirror yet (e.g. opened for edit without ever having synced down)
-    // — harmless here for the same reason enqueueOrderStatusUpdate's own
-    // comment explains: the queue item below is what actually delivers
-    // the change, and nothing currently renders order specifics from
-    // this local row alone.
-    await db.orders.update(orderId, {
-      deliveryDate: fields.deliveryDate ? new Date(fields.deliveryDate).toISOString() : null,
-      suitType: fields.suitType as SuitType,
-      collarType: (fields.collarType || null) as CollarType | null,
-      bainType: (fields.bainType || null) as BainType | null,
-      cuffType: fields.cuffType as CuffType,
-      gheraType: fields.gheraType as GheraType,
-      pocketOptionId: fields.pocketOptionId || null,
-      pattiOptionId: fields.pattiOptionId || null,
-      totalAmount: fields.totalAmount,
-      advanceAmount: fields.advanceAmount,
-      balanceAmount,
-      note: fields.note || null,
-      updatedAt: now,
-      syncStatus: "pending",
-    });
-
-    // Reconcile local orderItems to the new quantity — mirrors the
-    // server-side reconciliation in order-update.ts so anything reading
-    // this order's local items (e.g. a future local-first Order Detail
-    // enhancement) already sees the right shape ahead of sync.
-    const existingItems = await db.orderItems.where("orderId").equals(orderId).toArray();
-    const extraIds = existingItems.filter((item) => item.position > quantity).map((item) => item.id);
-    if (extraIds.length > 0) {
-      await db.orderItems.bulkDelete(extraIds);
-    }
-    for (let position = 1; position <= quantity; position++) {
-      const existingItem = existingItems.find((item) => item.position === position);
-      const hasStyleOverride = position > 1 && fields[`item.${position}.suitType`] !== undefined;
-      const styleFields = hasStyleOverride
-        ? {
-            suitType: fields[`item.${position}.suitType`] as SuitType,
-            collarType: (fields[`item.${position}.collarType`] || null) as CollarType | null,
-            bainType: (fields[`item.${position}.bainType`] || null) as BainType | null,
-            cuffType: fields[`item.${position}.cuffType`] as CuffType,
-            gheraType: fields[`item.${position}.gheraType`] as GheraType,
-            pocketOptionId: fields[`item.${position}.pocketOptionId`] || null,
-          }
-        : { suitType: null, collarType: null, bainType: null, cuffType: null, gheraType: null, pocketOptionId: null };
-      const row: LocalOrderItem = {
-        id: existingItem?.id ?? crypto.randomUUID(),
-        orderId,
-        position,
-        // Never guessed locally — only a real sync ever assigns/changes
-        // this, same convention as orderNumber/customerCode.
-        measurementSnapshotId: existingItem?.measurementSnapshotId ?? null,
-        ...styleFields,
-        createdAt: existingItem?.createdAt ?? now,
+      // Table.update() is a silent no-op if this order isn't in the local
+      // mirror yet (e.g. opened for edit without ever having synced down)
+      // — harmless here for the same reason enqueueOrderStatusUpdate's own
+      // comment explains: the queue item below is what actually delivers
+      // the change, and nothing currently renders order specifics from
+      // this local row alone.
+      await db.orders.update(orderId, {
+        deliveryDate: fields.deliveryDate ? new Date(fields.deliveryDate).toISOString() : null,
+        measurementMode: "KAMEEZ_SHALWAR",
+        suitType: (fields.suitType || null) as SuitType | null,
+        collarType: (fields.collarType || null) as CollarType | null,
+        bainType: (fields.bainType || null) as BainType | null,
+        cuffType: (fields.cuffType || null) as CuffType | null,
+        gheraType: (fields.gheraType || null) as GheraType | null,
+        pocketOptionId: fields.pocketOptionId || null,
+        pattiOptionId: fields.pattiOptionId || null,
+        panchaOptionId: fields.panchaOptionId || null,
+        totalAmount: fields.totalAmount,
+        advanceAmount: fields.advanceAmount,
+        balanceAmount,
+        princeCoatUnitPrice: fields.princeCoatUnitPrice || null,
+        waistcoatUnitPrice: fields.waistcoatUnitPrice || null,
+        note: fields.note || null,
         updatedAt: now,
         syncStatus: "pending",
-      };
-      await db.orderItems.put(row);
-    }
+      });
 
-    const payload: UpdateOrderPayload = { orderId, customerId, fields, baseUpdatedAt };
-    const item: SyncQueueItem = {
-      op: "UPDATE_ORDER",
-      payload,
-      status: "pending",
-      attempts: 0,
-      lastError: null,
-      idempotencyKey,
-      createdAt: Date.now(),
-    };
-    await db.syncQueue.add(item);
-  });
+      // Reconcile local orderItems to the new quantity — mirrors the
+      // server-side reconciliation in order-update.ts so anything reading
+      // this order's local items (e.g. a future local-first Order Detail
+      // enhancement) already sees the right shape ahead of sync.
+      const existingItems = await db.orderItems.where("orderId").equals(orderId).toArray();
+      const extraIds = existingItems.filter((item) => item.position > quantity).map((item) => item.id);
+      if (extraIds.length > 0) {
+        await db.orderItems.bulkDelete(extraIds);
+      }
+      for (let position = 1; position <= quantity; position++) {
+        const existingItem = existingItems.find((item) => item.position === position);
+        const hasStyleOverride = position > 1 && fields[`item.${position}.suitType`] !== undefined;
+        const styleFields = hasStyleOverride
+          ? {
+              suitType: (fields[`item.${position}.suitType`] || null) as SuitType | null,
+              collarType: (fields[`item.${position}.collarType`] || null) as CollarType | null,
+              bainType: (fields[`item.${position}.bainType`] || null) as BainType | null,
+              cuffType: (fields[`item.${position}.cuffType`] || null) as CuffType | null,
+              gheraType: (fields[`item.${position}.gheraType`] || null) as GheraType | null,
+              pocketOptionId: fields[`item.${position}.pocketOptionId`] || null,
+            }
+          : { suitType: null, collarType: null, bainType: null, cuffType: null, gheraType: null, pocketOptionId: null };
+        // Independent sections upgrade — "COAT" for every position beyond
+        // kameezQuantity (the form submits this as a plain hidden field per
+        // Coat position, never an admin-facing choice), null otherwise
+        // (inherits the order's own measurementMode, which is always
+        // KAMEEZ_SHALWAR for every order going forward).
+        const itemMeasurementMode = (fields[`item.${position}.measurementMode`] || null) as MeasurementMode | null;
+        // Explicit garment selection upgrade — submitted as a plain field
+        // per Coat position, same "null for every Kameez/Shalwar position"
+        // shape as itemMeasurementMode above.
+        const itemCoatGarmentSelection = (fields[`item.${position}.coatGarmentSelection`] || null) as CoatGarmentSelection | null;
+        const row: LocalOrderItem = {
+          id: existingItem?.id ?? crypto.randomUUID(),
+          orderId,
+          position,
+          // Never guessed locally — only a real sync ever assigns/changes
+          // this, same convention as orderNumber/customerCode.
+          measurementSnapshotId: existingItem?.measurementSnapshotId ?? null,
+          ...styleFields,
+          measurementMode: itemMeasurementMode,
+          coatGarmentSelection: itemCoatGarmentSelection,
+          createdAt: existingItem?.createdAt ?? now,
+          updatedAt: now,
+          syncStatus: "pending",
+        };
+        await db.orderItems.put(row);
+      }
+
+      const payload: UpdateOrderPayload = { orderId, customerId, fields, baseUpdatedAt };
+      const item: SyncQueueItem = {
+        op: "UPDATE_ORDER",
+        payload,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        idempotencyKey,
+        createdAt: Date.now(),
+        baselineResolved: false,
+      };
+      await db.syncQueue.add(item);
+    });
+  } catch (error) {
+    return { queued: false, reason: "storage-error", message: describeOfflineStorageError(error) };
+  }
 
   return { queued: true, id: orderId };
 }
@@ -680,11 +871,28 @@ export async function enqueueUpdateOrder(customerId: string, orderId: string, fo
 export interface DeleteOrderPayload {
   orderId: string;
   customerId: string;
+  /**
+   * Captured at enqueue time, BEFORE the local order row is deleted —
+   * structurally never re-resolvable at dispatch time the way
+   * UPDATE_CUSTOMER/UPDATE_ORDER/UPDATE_ORDER_STATUS's baselines are
+   * (there is no live local row left to re-read once this function
+   * returns). Used as-is, unchanged, for every attempt of this item,
+   * including retries — exactly the enqueue-time-freeze behavior every
+   * other op had before the baseline-freeze redesign, kept here because
+   * it is the only value that is actually available. The one accepted
+   * consequence: if a sibling operation on this same order completes
+   * between this item's enqueue and its first dispatch, this delete's
+   * baseline can be stale relative to the server's current state —
+   * which surfaces as an ordinary, safely-resolvable conflict (never a
+   * silent wrong delete), not a correctness bug.
+   */
+  baseUpdatedAt: string;
 }
 
 export interface OrderDeleteEnqueueResult {
   queued: boolean;
-  reason?: "no-indexeddb";
+  reason?: "no-indexeddb" | "storage-error";
+  message?: string;
 }
 
 /**
@@ -709,23 +917,34 @@ export async function enqueueDeleteOrder(customerId: string, orderId: string): P
 
   const db = getOfflineDb();
   const idempotencyKey = generateIdempotencyKey();
+  const now = new Date().toISOString();
 
-  await db.transaction("rw", [db.orders, db.orderItems, db.syncQueue], async () => {
-    await db.orders.delete(orderId);
-    await db.orderItems.where("orderId").equals(orderId).delete();
+  try {
+    await db.transaction("rw", [db.orders, db.orderItems, db.syncQueue], async () => {
+      // Must read this BEFORE deleting the local row below — there is no
+      // live local record left to consult afterward (see
+      // DeleteOrderPayload.baseUpdatedAt's own comment).
+      const existingOrder = await db.orders.get(orderId);
+      const baseUpdatedAt = existingOrder?.baseUpdatedAt ?? existingOrder?.updatedAt ?? now;
 
-    const payload: DeleteOrderPayload = { orderId, customerId };
-    const item: SyncQueueItem = {
-      op: "DELETE_ORDER",
-      payload,
-      status: "pending",
-      attempts: 0,
-      lastError: null,
-      idempotencyKey,
-      createdAt: Date.now(),
-    };
-    await db.syncQueue.add(item);
-  });
+      await db.orders.delete(orderId);
+      await db.orderItems.where("orderId").equals(orderId).delete();
+
+      const payload: DeleteOrderPayload = { orderId, customerId, baseUpdatedAt };
+      const item: SyncQueueItem = {
+        op: "DELETE_ORDER",
+        payload,
+        status: "pending",
+        attempts: 0,
+        lastError: null,
+        idempotencyKey,
+        createdAt: Date.now(),
+      };
+      await db.syncQueue.add(item);
+    });
+  } catch (error) {
+    return { queued: false, reason: "storage-error", message: describeOfflineStorageError(error) };
+  }
 
   return { queued: true };
 }
@@ -777,6 +996,94 @@ export function findStuckSendingItemIds(items: SyncQueueItem[]): number[] {
   return items.filter((item): item is SyncQueueItem & { id: number } => item.status === "sending" && item.id !== undefined).map((item) => item.id);
 }
 
+/**
+ * Reads the live local record's confirmed baseline for an item that
+ * hasn't been frozen yet. Three distinct outcomes, each handled
+ * differently by prepareItemForDispatch():
+ *   - a non-empty string: the real baseline to freeze and send.
+ *   - `null`: the record genuinely has no usable baseline (missing
+ *     entirely, or present with `baseUpdatedAt` still null/empty) — a
+ *     permanent, fail-closed condition (dispatchBlocked).
+ *   - throws: a transient read failure (e.g. the IndexedDB transaction
+ *     itself failed) — must stay retryable, never treated as "missing".
+ * UPDATE_CUSTOMER, UPDATE_ORDER, and UPDATE_ORDER_STATUS all use a live-
+ * re-readable baseline (their local record stays live the whole time).
+ * DELETE_ORDER does NOT go through this function at all — its local
+ * order row is deleted at enqueue time, so there is nothing left to
+ * re-read; its baseline is captured once, at enqueue, and used as-is
+ * (see DeleteOrderPayload.baseUpdatedAt's own comment).
+ */
+async function readLiveBaseline(item: SyncQueueItem): Promise<string | null> {
+  const db = getOfflineDb();
+  if (item.op === "UPDATE_ORDER" || item.op === "UPDATE_ORDER_STATUS") {
+    const payload = item.payload as UpdateOrderPayload | UpdateOrderStatusPayload;
+    const order = await db.orders.get(payload.orderId);
+    return order?.baseUpdatedAt || null;
+  }
+  if (item.op === "UPDATE_CUSTOMER") {
+    const payload = item.payload as UpdateCustomerPayload;
+    const customer = await db.customers.get(payload.customerId);
+    return customer?.baseUpdatedAt || null;
+  }
+  return null;
+}
+
+/** Dependencies prepareItemForDispatch() needs — injected so it's testable with fakes, no Dexie/browser required. */
+export interface DispatchPrepDeps {
+  readLiveBaseline: (item: SyncQueueItem) => Promise<string | null>;
+  /** Mirrors Dexie's own Table.update() contract: resolves to the number of records actually modified (0 or 1 here). */
+  persist: (id: number, fields: Partial<SyncQueueItem>) => Promise<number>;
+}
+
+export type DispatchPrepResult =
+  | { ok: true; itemToSend: SyncQueueItem }
+  // The live record has no usable baseline at all — permanent, fails
+  // closed. Never falls back to the stale item.payload.baseUpdatedAt.
+  | { ok: false; reason: "missing-record" }
+  // readLiveBaseline() itself threw (a transient storage error, not a
+  // missing record) — must stay retryable, never dispatchBlocked.
+  | { ok: false; reason: "transient-read-error"; message: string }
+  // The persistence write didn't report exactly one modified record —
+  // never proceed to send on an unconfirmed write.
+  | { ok: false; reason: "persist-failed" };
+
+/**
+ * Resolves and freezes this item's baseline (if not already frozen),
+ * persists that + the "sending" transition in one write, and returns the
+ * exact object to pass to sendQueueItem() — never the original, possibly
+ * stale in-memory `item` (Table.update() only patches the stored IndexedDB
+ * record; it does not mutate the object already in memory). The network
+ * is only ever contacted after this resolves `ok: true`.
+ */
+const OPS_WITH_LIVE_BASELINE: readonly SyncOp[] = ["UPDATE_ORDER", "UPDATE_CUSTOMER", "UPDATE_ORDER_STATUS"];
+
+export async function prepareItemForDispatch(item: SyncQueueItem, deps: DispatchPrepDeps): Promise<DispatchPrepResult> {
+  if (item.baselineResolved || !OPS_WITH_LIVE_BASELINE.includes(item.op)) {
+    const count = await deps.persist(item.id as number, { status: "sending" });
+    if (count !== 1) return { ok: false, reason: "persist-failed" };
+    return { ok: true, itemToSend: item };
+  }
+
+  let liveBaseline: string | null;
+  try {
+    liveBaseline = await deps.readLiveBaseline(item);
+  } catch (err) {
+    return { ok: false, reason: "transient-read-error", message: err instanceof Error ? err.message : String(err) };
+  }
+  if (!liveBaseline) {
+    return { ok: false, reason: "missing-record" };
+  }
+
+  const updateFields: Partial<SyncQueueItem> = {
+    status: "sending",
+    baselineResolved: true,
+    payload: { ...(item.payload as Record<string, unknown>), baseUpdatedAt: liveBaseline },
+  };
+  const count = await deps.persist(item.id as number, updateFields);
+  if (count !== 1) return { ok: false, reason: "persist-failed" };
+  return { ok: true, itemToSend: { ...item, ...updateFields } };
+}
+
 export interface ProcessResult {
   processedCount: number;
   syncedCount: number;
@@ -822,17 +1129,66 @@ export async function processSyncQueue(): Promise<ProcessResult> {
       if (!item || item.id === undefined) break;
 
       processedCount++;
-      await db.syncQueue.update(item.id, { status: "sending" });
 
-      const outcome = await sendQueueItem(item);
+      const prep = await prepareItemForDispatch(item, {
+        readLiveBaseline,
+        persist: (id, fields) => db.syncQueue.update(id, fields),
+      });
+
+      if (!prep.ok) {
+        if (prep.reason === "missing-record") {
+          // Fails closed, permanently — never falls back to the stale
+          // item.payload.baseUpdatedAt. Should be unreachable under
+          // correct operation (the dependency-closure tracking is what's
+          // supposed to guarantee this record exists); if it fires, it's
+          // a real anomaly needing manual review, not something blind
+          // retry could ever fix.
+          await db.syncQueue.update(item.id, {
+            status: "failed",
+            dispatchBlocked: true,
+            lastError: "Could not establish a safe version baseline for this update — the local record may be missing. Needs manual review.",
+          });
+          continue;
+        }
+        if (prep.reason === "persist-failed") {
+          // The item vanished/changed under us between selection and
+          // this write — status in Dexie is unaffected either way; skip
+          // it this run rather than guess, the next run will reselect it.
+          continue;
+        }
+        // "transient-read-error" — a storage read failure, NOT a missing
+        // record. Must stay retryable, same backoff treatment as an
+        // ordinary network/5xx failure below, never dispatchBlocked.
+        const attempts = item.attempts + 1;
+        if (attempts >= MAX_ATTEMPTS) {
+          await db.syncQueue.update(item.id, { status: "failed", attempts, lastError: prep.message });
+          continue;
+        }
+        await db.syncQueue.update(item.id, { status: "pending", attempts, lastError: prep.message });
+        const delay = BACKOFF_MS[Math.min(attempts - 1, BACKOFF_MS.length - 1)];
+        const timer = setTimeout(() => {
+          pendingRetryTimers.delete(timer);
+          processSyncQueue().catch(() => {});
+        }, delay);
+        pendingRetryTimers.add(timer);
+        break;
+      }
+
+      const itemToSend = prep.itemToSend;
+      const outcome = await sendQueueItem(itemToSend);
 
       if (outcome.kind === "success") {
         await db.syncQueue.update(item.id, { status: "synced", lastError: null });
         if (item.op === "UPDATE_ORDER_STATUS") {
           const payload = item.payload as UpdateOrderStatusPayload;
+          const data = outcome.data as { updatedAt?: string } | undefined;
           // Best-effort — see the same "may not exist locally yet" note
-          // in enqueueOrderStatusUpdate() above.
-          await db.orders.update(payload.orderId, { syncStatus: "synced" }).catch(() => {});
+          // in enqueueOrderStatusUpdate() above. baseUpdatedAt advances
+          // here too — same "this device's own successful sync of a
+          // sibling operation" rule as UPDATE_CUSTOMER/UPDATE_ORDER.
+          await db.orders
+            .update(payload.orderId, { syncStatus: "synced", ...(data?.updatedAt ? { updatedAt: data.updatedAt, baseUpdatedAt: data.updatedAt } : {}) })
+            .catch(() => {});
         } else if (item.op === "CREATE_CUSTOMER") {
           const payload = item.payload as CreateCustomerPayload;
           const data = outcome.data as { customerCode?: string } | undefined;
@@ -846,13 +1202,28 @@ export async function processSyncQueue(): Promise<ProcessResult> {
         } else if (item.op === "UPDATE_CUSTOMER") {
           const payload = item.payload as UpdateCustomerPayload;
           const data = outcome.data as { updatedAt?: string } | undefined;
+          // baseUpdatedAt advances here too — this is exactly "this
+          // device's own successful sync of a sibling operation" (see
+          // LocalCustomer.baseUpdatedAt's own comment), the one thing
+          // besides an initial-sync pull allowed to move it.
           await db.customers
-            .update(payload.customerId, { syncStatus: "synced", ...(data?.updatedAt ? { updatedAt: data.updatedAt } : {}) })
+            .update(payload.customerId, {
+              syncStatus: "synced",
+              ...(data?.updatedAt ? { updatedAt: data.updatedAt, baseUpdatedAt: data.updatedAt } : {}),
+            })
             .catch(() => {});
         } else if (item.op === "SAVE_MEASUREMENT") {
           const payload = item.payload as SaveMeasurementPayload;
           const data = outcome.data as { updatedAt?: string } | undefined;
           await db.measurements
+            .where("customerId")
+            .equals(payload.customerId)
+            .modify({ syncStatus: "synced", ...(data?.updatedAt ? { updatedAt: data.updatedAt } : {}) })
+            .catch(() => {});
+        } else if (item.op === "SAVE_COAT_MEASUREMENT") {
+          const payload = item.payload as SaveCoatMeasurementPayload;
+          const data = outcome.data as { updatedAt?: string } | undefined;
+          await db.coatMeasurements
             .where("customerId")
             .equals(payload.customerId)
             .modify({ syncStatus: "synced", ...(data?.updatedAt ? { updatedAt: data.updatedAt } : {}) })
@@ -872,14 +1243,19 @@ export async function processSyncQueue(): Promise<ProcessResult> {
             .update(payload.id, {
               syncStatus: "synced",
               ...(data?.orderNumber ? { orderNumber: data.orderNumber } : {}),
-              ...(data?.updatedAt ? { updatedAt: data.updatedAt } : {}),
+              ...(data?.updatedAt ? { updatedAt: data.updatedAt, baseUpdatedAt: data.updatedAt } : {}),
             })
             .catch(() => {});
         } else if (item.op === "UPDATE_ORDER") {
           const payload = item.payload as UpdateOrderPayload;
           const data = outcome.data as { updatedAt?: string } | undefined;
+          // baseUpdatedAt advances here too — same "sibling operation's
+          // own successful sync" rule as UPDATE_CUSTOMER above.
           await db.orders
-            .update(payload.orderId, { syncStatus: "synced", ...(data?.updatedAt ? { updatedAt: data.updatedAt } : {}) })
+            .update(payload.orderId, {
+              syncStatus: "synced",
+              ...(data?.updatedAt ? { updatedAt: data.updatedAt, baseUpdatedAt: data.updatedAt } : {}),
+            })
             .catch(() => {});
           // Best-effort — local items were already written in the shape
           // the server now agrees with; only their sync flag needs
@@ -918,10 +1294,14 @@ export async function processSyncQueue(): Promise<ProcessResult> {
         if (item.op === "UPDATE_CUSTOMER") {
           const payload = item.payload as UpdateCustomerPayload;
           await db.customers.update(payload.customerId, { syncStatus: "conflict" }).catch(() => {});
-        } else if (item.op === "UPDATE_ORDER") {
-          const payload = item.payload as UpdateOrderPayload;
+        } else if (item.op === "UPDATE_ORDER" || item.op === "UPDATE_ORDER_STATUS") {
+          const payload = item.payload as UpdateOrderPayload | UpdateOrderStatusPayload;
           await db.orders.update(payload.orderId, { syncStatus: "conflict" }).catch(() => {});
         }
+        // DELETE_ORDER: no local order row exists to flag (already
+        // deleted at enqueue time) — the conflict is still visible and
+        // resolvable through the queue-item list (readConflicts()
+        // below), just not through a customer/order-page badge.
         continue;
       }
 
@@ -938,6 +1318,25 @@ export async function processSyncQueue(): Promise<ProcessResult> {
         });
         authRequired = true;
         break;
+      }
+
+      if (outcome.kind === "idempotency-key-reuse") {
+        // UPDATE_ORDER only — the server already has a committed receipt
+        // for this operationId under a DIFFERENT payload. Permanent,
+        // never a stale-version conflict: deliberately does NOT set
+        // conflictServerUpdatedAt (so isConflictItem() stays false — this
+        // must never reach readConflicts()/resolveConflictKeepLocal/
+        // resolveConflictUseServer, which all assume a real server
+        // baseline exists to rebase onto; there isn't one here). Should
+        // never happen under correct client operation — needs manual
+        // review, not blind retry.
+        await db.syncQueue.update(item.id, {
+          status: "failed",
+          attempts: item.attempts + 1,
+          idempotencyKeyReuse: true,
+          lastError: outcome.message,
+        });
+        continue;
       }
 
       if (outcome.kind === "rejected") {
@@ -1057,8 +1456,9 @@ export async function readConflicts(): Promise<ConflictEntry[]> {
   for (const item of failed) {
     if (!isConflictItem(item) || item.id === undefined) continue;
 
-    // Only UPDATE_CUSTOMER and UPDATE_ORDER can conflict — they are the
-    // only two ops that send a baseUpdatedAt for the server to check.
+    // UPDATE_CUSTOMER, UPDATE_ORDER, UPDATE_ORDER_STATUS, and
+    // DELETE_ORDER can all conflict — every op that sends a
+    // baseUpdatedAt for the server to check.
     if (item.op === "UPDATE_CUSTOMER") {
       const payload = item.payload as UpdateCustomerPayload;
       entries.push({
@@ -1069,8 +1469,8 @@ export async function readConflicts(): Promise<ConflictEntry[]> {
         message: item.lastError ?? "",
         canKeepLocal: !!item.conflictServerUpdatedAt,
       });
-    } else if (item.op === "UPDATE_ORDER") {
-      const payload = item.payload as UpdateOrderPayload;
+    } else if (item.op === "UPDATE_ORDER" || item.op === "UPDATE_ORDER_STATUS" || item.op === "DELETE_ORDER") {
+      const payload = item.payload as UpdateOrderPayload | UpdateOrderStatusPayload | DeleteOrderPayload;
       entries.push({
         queueItemId: item.id,
         op: item.op,
@@ -1128,6 +1528,16 @@ export async function resolveConflictKeepLocal(queueItemId: number): Promise<Res
     status: "pending",
     attempts: 0,
     lastError: null,
+    // This rebase itself supplies an authoritative baseline (the
+    // server's own reported current updatedAt) — prepareItemForDispatch
+    // must not re-read the live local record over the top of it, so this
+    // is set directly rather than left for dispatch to resolve. Safe
+    // under the receipt design: reaching this function at all required
+    // the server to have found no matching receipt for this item's
+    // operationId (that's what makes it a real, surfaced conflict rather
+    // than a silent replay), so resending under the same operationId
+    // here can never collide with a prior commit.
+    baselineResolved: true,
     // No longer a conflict — clearing this returns the item to the
     // ordinary pending/failed lifecycle.
     conflictServerUpdatedAt: undefined,
@@ -1138,10 +1548,14 @@ export async function resolveConflictKeepLocal(queueItemId: number): Promise<Res
   if (item.op === "UPDATE_CUSTOMER") {
     const p = item.payload as UpdateCustomerPayload;
     await db.customers.update(p.customerId, { syncStatus: "pending" }).catch(() => {});
-  } else if (item.op === "UPDATE_ORDER") {
-    const p = item.payload as UpdateOrderPayload;
+  } else if (item.op === "UPDATE_ORDER" || item.op === "UPDATE_ORDER_STATUS") {
+    const p = item.payload as UpdateOrderPayload | UpdateOrderStatusPayload;
     await db.orders.update(p.orderId, { syncStatus: "pending" }).catch(() => {});
   }
+  // DELETE_ORDER: no local order row exists to flag back to "pending" —
+  // it was already removed from Dexie at enqueue time. The rebased
+  // payload (baselineResolved: true, above) is all this item needs;
+  // processSyncQueue() below will deliver it.
 
   await processSyncQueue();
   return { ok: true };
@@ -1177,10 +1591,15 @@ export async function resolveConflictUseServer(queueItemId: number): Promise<Res
   if (item.op === "UPDATE_CUSTOMER") {
     const p = item.payload as UpdateCustomerPayload;
     await db.customers.update(p.customerId, { syncStatus: "synced" }).catch(() => {});
-  } else if (item.op === "UPDATE_ORDER") {
-    const p = item.payload as UpdateOrderPayload;
+  } else if (item.op === "UPDATE_ORDER" || item.op === "UPDATE_ORDER_STATUS") {
+    const p = item.payload as UpdateOrderPayload | UpdateOrderStatusPayload;
     await db.orders.update(p.orderId, { syncStatus: "synced" }).catch(() => {});
   }
+  // DELETE_ORDER: no local row to mark — it's already gone. Deleting
+  // this queue item above is itself what unblocks the re-pull below:
+  // pendingDeleteOrderIds() (initial-sync.ts) only skips re-pulling an
+  // order while a NON-synced DELETE_ORDER item for it still exists in
+  // this same queue, and this one no longer does.
 
   // Pull the server's actual values down now, rather than leaving the
   // local row showing the discarded edit until the next app load. Safe
@@ -1204,8 +1623,12 @@ export async function retryFailedQueueItems(): Promise<RetryResult> {
   // first time. Retrying them produced an endless loop that looked like
   // the app trying and never reporting why. They are excluded here and
   // resolved explicitly instead (resolveConflictKeepLocal /
-  // resolveConflictUseServer).
-  const retryable = failed.filter((item) => !isConflictItem(item));
+  // resolveConflictUseServer). idempotencyKeyReuse and dispatchBlocked
+  // are excluded for the same underlying reason: both are permanent —
+  // resending the identical frozen payload (idempotencyKeyReuse) or
+  // retrying a dispatch that never had a safe baseline to send
+  // (dispatchBlocked) would only ever fail the same way again.
+  const retryable = failed.filter((item) => !isConflictItem(item) && !item.idempotencyKeyReuse && !item.dispatchBlocked);
   for (const item of retryable) {
     if (item.id !== undefined) {
       await db.syncQueue.update(item.id, { status: "pending", attempts: 0 });
@@ -1222,6 +1645,13 @@ type SendOutcome =
   // what made a conflict unresolvable: without it there is no correct
   // baseline to re-submit an overwrite against.
   | { kind: "conflict"; message: string; serverUpdatedAt?: string }
+  // UPDATE_ORDER only — the server's receipt table already has a
+  // committed result for this operationId under a DIFFERENT payload
+  // hash. Permanent, never a stale-version conflict: classified by the
+  // explicit `code: "idempotency-key-reuse"` in the 422 body, never by
+  // status code alone (other business-rule rejections could plausibly
+  // also use 422 in the future without meaning this).
+  | { kind: "idempotency-key-reuse"; message: string }
   | { kind: "rejected"; message: string }
   | { kind: "retryable"; message: string };
 
@@ -1248,6 +1678,11 @@ function requestFor(item: SyncQueueItem): { url: string; body: unknown } | null 
         url: "/api/sync/measurement",
         body: { ...(item.payload as SaveMeasurementPayload), idempotencyKey: item.idempotencyKey },
       };
+    case "SAVE_COAT_MEASUREMENT":
+      return {
+        url: "/api/sync/coat-measurement",
+        body: { ...(item.payload as SaveCoatMeasurementPayload), idempotencyKey: item.idempotencyKey },
+      };
     case "CREATE_ORDER": {
       // A real FormData body, not JSON — see order-create-sync.ts's file
       // header. sendQueueItem() below sends this as multipart/form-data
@@ -1271,11 +1706,15 @@ function requestFor(item: SyncQueueItem): { url: string; body: unknown } | null 
       body.set("__orderId", payload.orderId);
       body.set("__customerId", payload.customerId);
       body.set("__baseUpdatedAt", payload.baseUpdatedAt);
+      body.set("__idempotencyKey", item.idempotencyKey);
       return { url: "/api/sync/order-update", body };
     }
     case "DELETE_ORDER": {
       const payload = item.payload as DeleteOrderPayload;
-      return { url: "/api/sync/order-delete", body: { customerId: payload.customerId, orderId: payload.orderId } };
+      return {
+        url: "/api/sync/order-delete",
+        body: { customerId: payload.customerId, orderId: payload.orderId, baseUpdatedAt: payload.baseUpdatedAt },
+      };
     }
     default:
       return null;
@@ -1326,6 +1765,16 @@ async function sendQueueItem(item: SyncQueueItem): Promise<SendOutcome> {
       message: (body && body.error) || "Conflict: this record was changed elsewhere",
       serverUpdatedAt: typeof body?.serverUpdatedAt === "string" ? body.serverUpdatedAt : undefined,
     };
+  }
+  if (response.status === 422) {
+    const body = await response.json().catch(() => null);
+    // The machine-readable `code` is the actual discriminator, never the
+    // bare status — a future, unrelated validation error could plausibly
+    // also return 422 without meaning "idempotency key reuse".
+    if (body?.code === "idempotency-key-reuse") {
+      return { kind: "idempotency-key-reuse", message: (body && body.error) || "This change was already recorded under a different request." };
+    }
+    return { kind: "rejected", message: (body && body.error) || "Server responded 422" };
   }
   if (response.ok) {
     const data = await response.json().catch(() => undefined);

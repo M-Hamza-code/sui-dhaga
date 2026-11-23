@@ -10,8 +10,19 @@
 // negotiation) since there is exactly one issuer, one verifier, and one
 // fixed algorithm — a JWT library would be unnecessary surface area here.
 
+// The cookie name is environment-specific (SESSION_COOKIE_NAME, set in
+// .env.test only) so a browser that's ever logged into the real app and
+// the isolated test server can hold two completely separate cookies at
+// once, never one overwriting or being mistaken for the other — this is
+// what makes verifySessionToken's own signature check below actually
+// mean something: a token signed for one environment can no longer even
+// be *sent* to the other, regardless of whether SESSION_SECRET also
+// differs between them (see .env.test's own comment on why it now does
+// too). Falls back to the real app's historical "sd_session" whenever
+// the env var isn't set, so production/normal development is completely
+// unaffected.
 export const SESSION_COOKIE = {
-  name: "sd_session",
+  name: process.env.SESSION_COOKIE_NAME || "sd_session",
   maxAge: 60 * 60 * 24 * 7, // 7 days, in seconds
 };
 

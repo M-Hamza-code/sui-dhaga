@@ -31,6 +31,7 @@ interface OrderStatusSyncBody {
   customerId?: unknown;
   orderId?: unknown;
   status?: unknown;
+  baseUpdatedAt?: unknown;
   idempotencyKey?: unknown;
 }
 
@@ -47,12 +48,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Malformed JSON body" }, { status: 400 });
   }
 
-  const { customerId, orderId, status } = body;
+  const { customerId, orderId, status, baseUpdatedAt } = body;
   if (typeof customerId !== "string" || !customerId || typeof orderId !== "string" || !orderId) {
     return NextResponse.json({ error: "customerId and orderId are required" }, { status: 400 });
   }
+  if (typeof baseUpdatedAt !== "string" || !baseUpdatedAt) {
+    return NextResponse.json({ error: "baseUpdatedAt is required" }, { status: 400 });
+  }
 
-  const result = await applyOrderStatusUpdate(customerId, orderId, status);
+  const result = await applyOrderStatusUpdate(customerId, orderId, status, baseUpdatedAt);
 
   if (!result.ok) {
     if (result.reason === "customer-not-found") {
@@ -60,6 +64,12 @@ export async function POST(request: Request) {
     }
     if (result.reason === "order-not-found") {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    }
+    if (result.reason === "conflict") {
+      return NextResponse.json(
+        { error: "This order was changed elsewhere since this status change was queued", serverUpdatedAt: result.serverUpdatedAt },
+        { status: 409 }
+      );
     }
     // "invalid-status" — the offline sync engine's own local check
     // (isValidSelectableOrderStatus) should already have caught this
@@ -79,5 +89,5 @@ export async function POST(request: Request) {
   revalidatePath(`/customers/${customerId}`);
   revalidatePath("/orders");
 
-  return NextResponse.json({ ok: true, changed: result.changed });
+  return NextResponse.json({ ok: true, changed: result.changed, updatedAt: result.updatedAt });
 }

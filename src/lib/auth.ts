@@ -5,6 +5,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { SESSION_COOKIE, verifySessionToken, type SessionPayload } from "@/lib/session";
+import { prisma } from "@/lib/prisma";
 
 /**
  * Returns the current session payload, or null if the visitor is not
@@ -31,5 +32,45 @@ export async function requireSession(): Promise<SessionPayload> {
   if (!session) {
     redirect("/login");
   }
+  return session;
+}
+
+async function userIsAdmin(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+  return user?.role === "ADMIN";
+}
+
+/**
+ * Backup/Restore authorization. Deliberately distinct from
+ * requireSession(): a valid signed session proves "this request is
+ * someone who logged in", never "this request is allowed to restore
+ * the entire database" — those are different questions, and conflating
+ * them was the gap the approved Backup & Restore design explicitly
+ * flagged. Use this (not requireSession()) at the top of every Server
+ * Action that can read, upload, validate, or apply a restore.
+ *
+ * Redirects (same as requireSession()) rather than returning an error
+ * value — correct for a Server Action, wrong for a JSON Route Handler;
+ * see getAdminSession() below for that case.
+ */
+export async function requireAdminSession(): Promise<SessionPayload> {
+  const session = await requireSession();
+  if (!(await userIsAdmin(session.sub))) {
+    redirect("/dashboard");
+  }
+  return session;
+}
+
+/**
+ * Same authorization as requireAdminSession(), but for a Route Handler
+ * (the upload endpoint): never redirects, just returns null so the
+ * caller can respond with its own 401/403 JSON — the same reasoning
+ * every existing /api/sync/* route already applies by using
+ * getSession() instead of requireSession().
+ */
+export async function getAdminSession(): Promise<SessionPayload | null> {
+  const session = await getSession();
+  if (!session) return null;
+  if (!(await userIsAdmin(session.sub))) return null;
   return session;
 }

@@ -4,9 +4,10 @@ import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { PhoneInput } from "@/components/ui/phone-input";
 import { BackupExportControls } from "@/components/backup/backup-export-controls";
+import { ResetLocalDataButton } from "@/components/settings/reset-local-data-button";
 import { SyncConflicts } from "@/components/offline/sync-conflicts";
 import { updateShopSettings } from "@/lib/shop-settings-actions";
-import { parseDefaultPrices } from "@/lib/shop-settings";
+import { parseDefaultPrices, parseDefaultGarmentPrices } from "@/lib/shop-settings";
 import { SUIT_TYPE_OPTIONS } from "@/lib/order-options";
 import { en } from "@/lib/locale";
 import type { Metadata } from "next";
@@ -82,6 +83,7 @@ export default async function SettingsPage({
     getSession(),
   ]);
   const defaultPrices = parseDefaultPrices(shopSettings?.defaultPrices);
+  const defaultGarmentPrices = parseDefaultGarmentPrices(shopSettings?.defaultPrices);
   // Only the two fields that actually print on a customer-facing
   // document count here — tagline and address are optional on paper,
   // and nagging about them would train the admin to ignore this.
@@ -242,6 +244,46 @@ export default async function SettingsPage({
                         </div>
                       </div>
                     ))}
+                    {/* Upgrade — Prince Coat/Waistcoat default prices,
+                        same price.<key> input-name convention, same
+                        defaultPrices JSON bag (see shop-settings.ts's own
+                        comment on why these are fixed keys rather than
+                        SuitType values). Pre-filled from
+                        DEFAULT_GARMENT_PRICE_FALLBACK (Rs. 5,000 / 3,000)
+                        the very first time this page is opened, before
+                        Settings has ever been saved with these keys. */}
+                    <div className="flex items-center justify-between gap-3">
+                      <label htmlFor="price.PRINCE_COAT" className="whitespace-nowrap text-sm text-graphite">
+                        {en.settings.princeCoat}
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-graphite/50">Rs.</span>
+                        <input
+                          id="price.PRINCE_COAT"
+                          name="price.PRINCE_COAT"
+                          type="text"
+                          inputMode="decimal"
+                          className={`${INPUT_CLASS} w-24 text-right tabular-nums`}
+                          defaultValue={defaultGarmentPrices.PRINCE_COAT}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <label htmlFor="price.WAISTCOAT" className="whitespace-nowrap text-sm text-graphite">
+                        {en.settings.waistcoat}
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-graphite/50">Rs.</span>
+                        <input
+                          id="price.WAISTCOAT"
+                          name="price.WAISTCOAT"
+                          type="text"
+                          inputMode="decimal"
+                          className={`${INPUT_CLASS} w-24 text-right tabular-nums`}
+                          defaultValue={defaultGarmentPrices.WAISTCOAT}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </fieldset>
@@ -262,6 +304,8 @@ export default async function SettingsPage({
                     value={defaultPrices[option.value] ?? ""}
                   />
                 ))}
+                <input type="hidden" name="price.PRINCE_COAT" value={defaultGarmentPrices.PRINCE_COAT} />
+                <input type="hidden" name="price.WAISTCOAT" value={defaultGarmentPrices.WAISTCOAT} />
               </>
             )}
 
@@ -310,6 +354,13 @@ export default async function SettingsPage({
               <div className="mt-3">
                 <BackupExportControls showLastBackupTime />
                 <p className="mt-3 text-xs leading-relaxed text-graphite/50">{en.settings.backupHint}</p>
+                {/* Restore is its own admin-only page (requireAdminSession
+                    guards it directly) — this is just a pointer to it,
+                    not a reimplementation of anything here. */}
+                <a href="/settings/restore" className="mt-2 inline-block text-xs font-semibold text-graphite underline">
+                  Restore from a backup file →
+                </a>
+                <p className="mt-3 text-xs leading-relaxed text-graphite/50">{en.settings.offlineDataWarning}</p>
               </div>
             </fieldset>
 
@@ -328,6 +379,20 @@ export default async function SettingsPage({
               </div>
             </fieldset>
           </div>
+        )}
+
+        {showBackupLanguage && (
+          <fieldset className="mt-4 rounded-sm border border-dashed border-red-300 bg-paper p-5">
+            <legend className="px-1 text-sm font-semibold uppercase tracking-wide text-red-700">
+              {en.settings.resetLocalData}
+            </legend>
+            <div className="mt-3">
+              <p className="text-xs leading-relaxed text-graphite/50">{en.settings.resetLocalDataHint}</p>
+              <div className="mt-3">
+                <ResetLocalDataButton />
+              </div>
+            </div>
+          </fieldset>
         )}
       </PageContainer>
     </main>

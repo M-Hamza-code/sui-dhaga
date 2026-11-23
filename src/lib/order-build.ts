@@ -1,5 +1,16 @@
-import { Prisma, OrderStatus, type SuitType, type CollarType, type BainType, type CuffType, type GheraType } from "@prisma/client";
+import {
+  Prisma,
+  OrderStatus,
+  type SuitType,
+  type CollarType,
+  type BainType,
+  type CuffType,
+  type GheraType,
+  type MeasurementMode,
+  type CoatGarmentSelection,
+} from "@prisma/client";
 import type { toMeasurementValueData } from "@/lib/measurement-value";
+import type { toCoatMeasurementValueData } from "@/lib/coat-measurement-value";
 
 // Extracted (Step 25) into its own plain module — a "use server" file's
 // exports must all be async Server Actions, and buildOrderCreateData is
@@ -14,38 +25,55 @@ import type { toMeasurementValueData } from "@/lib/measurement-value";
  * position with no override at all is simply `null` in itemStyles below.
  */
 export interface ItemStyleOverride {
-  suitType: SuitType;
+  // Upgrade — nullable now, same "Not Specified" reasoning as the
+  // order-level fields below.
+  suitType: SuitType | null;
   // Step 63 — exactly one of collarType/bainType is ever non-null, never
   // both, never neither (enforced in order-actions.ts's
   // validateOrderInput). Always assigned directly below (never omitted),
   // which is what correctly clears the other one on an update.
   collarType: CollarType | null;
   bainType: BainType | null;
-  cuffType: CuffType;
-  gheraType: GheraType;
+  cuffType: CuffType | null;
+  gheraType: GheraType | null;
   pocketOptionId?: string;
 }
 
 export interface ValidatedOrderInput {
   orderDate: Date;
   deliveryDate: Date;
-  suitType: SuitType;
+  /** Which measurement form this order's default block used — see MeasurementMode's own schema.prisma comment. */
+  measurementMode: MeasurementMode;
+  // Upgrade — all three nullable now: each can be deliberately "Not
+  // Specified" (mirrors collarType/bainType's own long-standing
+  // nullability), and a Coat-mode order submits none of the five at all.
+  suitType: SuitType | null;
   collarType: CollarType | null;
   bainType: BainType | null;
-  cuffType: CuffType;
-  gheraType: GheraType;
+  cuffType: CuffType | null;
+  gheraType: GheraType | null;
   pocketOptionId?: string;
   /** Step 57 — order-level only, no per-suit override (OrderItem has no pattiOptionId column — see ItemStyleOverride's own comment). */
   pattiOptionId?: string;
+  /** Pancha Style — same order-level-only shape as pattiOptionId above. */
+  panchaOptionId?: string;
   totalAmount: string;
   advanceAmount: string;
   balanceAmount: string;
+  /** The actual Prince Coat/Waistcoat per-unit price frozen for this order — see Order.princeCoatUnitPrice's own schema.prisma comment. Null when this order has no Coat/Waistcoat entries. */
+  princeCoatUnitPrice: string | null;
+  waistcoatUnitPrice: string | null;
   note: string | null;
   quantity: number;
-  defaultSnapshotData: ReturnType<typeof toMeasurementValueData> & { note: string | null; isBackfilled: boolean };
-  itemOverrides: (ReturnType<typeof toMeasurementValueData> | null)[];
+  defaultSnapshotData: ReturnType<typeof toMeasurementValueData> &
+    ReturnType<typeof toCoatMeasurementValueData> & { note: string | null; isBackfilled: boolean };
+  itemOverrides: ((ReturnType<typeof toMeasurementValueData> & ReturnType<typeof toCoatMeasurementValueData>) | null)[];
   /** Step 50 — one entry per suit position, same length/order as itemOverrides; null = "same style as the order" (always true for position 1). */
   itemStyles: (ItemStyleOverride | null)[];
+  /** "Ideally, an order should also support both garment types" — one entry per suit position; null = "same measurementMode as the order" (always true for position 1). */
+  itemMeasurementModes: (MeasurementMode | null)[];
+  /** Explicit per-entry Coat/Waistcoat garment selection (see CoatGarmentSelection's own schema.prisma comment) — one entry per suit position, same length/order as itemMeasurementModes; null for every Kameez/Shalwar position, a real value (never content-derived) for every Coat position. */
+  itemCoatGarmentSelections: (CoatGarmentSelection | null)[];
 }
 
 /**
@@ -72,6 +100,7 @@ export function buildOrderCreateData(
     customer: { connect: { id: customerId } },
     orderDate: validated.orderDate,
     deliveryDate: validated.deliveryDate,
+    measurementMode: validated.measurementMode,
     suitType: validated.suitType,
     collarType: validated.collarType,
     bainType: validated.bainType,
@@ -79,9 +108,12 @@ export function buildOrderCreateData(
     gheraType: validated.gheraType,
     pocketOption: validated.pocketOptionId ? { connect: { id: validated.pocketOptionId } } : undefined,
     pattiOption: validated.pattiOptionId ? { connect: { id: validated.pattiOptionId } } : undefined,
+    panchaOption: validated.panchaOptionId ? { connect: { id: validated.panchaOptionId } } : undefined,
     totalAmount: validated.totalAmount,
     advanceAmount: validated.advanceAmount,
     balanceAmount: validated.balanceAmount,
+    princeCoatUnitPrice: validated.princeCoatUnitPrice,
+    waistcoatUnitPrice: validated.waistcoatUnitPrice,
     status: OrderStatus.NEW,
     createdBy: { connect: { id: sessionSub } },
     note: validated.note,
@@ -89,8 +121,12 @@ export function buildOrderCreateData(
     items: {
       create: validated.itemOverrides.map((override, index) => {
         const styleOverride = validated.itemStyles[index];
+        const itemMode = validated.itemMeasurementModes[index];
+        const itemCoatGarmentSelection = validated.itemCoatGarmentSelections[index];
         return {
           position: index + 1,
+          ...(itemMode ? { measurementMode: itemMode } : {}),
+          ...(itemCoatGarmentSelection ? { coatGarmentSelection: itemCoatGarmentSelection } : {}),
           ...(override ? { measurementSnapshot: { create: { ...override, note: null, isBackfilled: false } } } : {}),
           ...(styleOverride
             ? {
@@ -130,6 +166,7 @@ export function buildOrderCreateData(
 export function buildOrderUpdateData(validated: ValidatedOrderInput): Prisma.OrderUpdateInput {
   return {
     deliveryDate: validated.deliveryDate,
+    measurementMode: validated.measurementMode,
     suitType: validated.suitType,
     collarType: validated.collarType,
     bainType: validated.bainType,
@@ -137,9 +174,12 @@ export function buildOrderUpdateData(validated: ValidatedOrderInput): Prisma.Ord
     gheraType: validated.gheraType,
     pocketOption: validated.pocketOptionId ? { connect: { id: validated.pocketOptionId } } : { disconnect: true },
     pattiOption: validated.pattiOptionId ? { connect: { id: validated.pattiOptionId } } : { disconnect: true },
+    panchaOption: validated.panchaOptionId ? { connect: { id: validated.panchaOptionId } } : { disconnect: true },
     totalAmount: validated.totalAmount,
     advanceAmount: validated.advanceAmount,
     balanceAmount: validated.balanceAmount,
+    princeCoatUnitPrice: validated.princeCoatUnitPrice,
+    waistcoatUnitPrice: validated.waistcoatUnitPrice,
     note: validated.note,
     defaultMeasurementSnapshot: { create: validated.defaultSnapshotData },
   };
@@ -153,11 +193,15 @@ export function buildOrderUpdateData(validated: ValidatedOrderInput): Prisma.Ord
  * identically rather than by a second, potentially-drifting copy.
  */
 export function newOrderItemFields(
-  override: ReturnType<typeof toMeasurementValueData> | null,
-  styleOverride: ItemStyleOverride | null
+  override: (ReturnType<typeof toMeasurementValueData> & ReturnType<typeof toCoatMeasurementValueData>) | null,
+  styleOverride: ItemStyleOverride | null,
+  measurementMode: MeasurementMode | null = null,
+  coatGarmentSelection: CoatGarmentSelection | null = null
 ): Prisma.OrderItemCreateWithoutOrderInput {
   return {
     position: 0, // caller always overwrites this with the real position
+    ...(measurementMode ? { measurementMode } : {}),
+    ...(coatGarmentSelection ? { coatGarmentSelection } : {}),
     ...(override ? { measurementSnapshot: { create: { ...override, note: null, isBackfilled: false } } } : {}),
     ...(styleOverride
       ? {
@@ -183,10 +227,14 @@ export function newOrderItemFields(
  * with it.
  */
 export function updatedOrderItemFields(
-  override: ReturnType<typeof toMeasurementValueData> | null,
-  styleOverride: ItemStyleOverride | null
+  override: (ReturnType<typeof toMeasurementValueData> & ReturnType<typeof toCoatMeasurementValueData>) | null,
+  styleOverride: ItemStyleOverride | null,
+  measurementMode: MeasurementMode | null = null,
+  coatGarmentSelection: CoatGarmentSelection | null = null
 ): Prisma.OrderItemUpdateInput {
   return {
+    measurementMode, // null explicitly clears a previously-set per-suit override, same "update must clear what create can just omit" reasoning as every field below
+    coatGarmentSelection, // same explicit-clear reasoning — always written fresh from this submission's own itemCoatGarmentSelections, never left stale from a previous save
     measurementSnapshot: override ? { create: { ...override, note: null, isBackfilled: false } } : { disconnect: true },
     ...(styleOverride
       ? {

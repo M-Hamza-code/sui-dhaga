@@ -2,8 +2,9 @@ import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/page-header";
 import { PageContainer } from "@/components/ui/page-container";
 import { OrderForm } from "@/components/orders/order-form";
-import { parseDefaultPrices } from "@/lib/shop-settings";
+import { parseDefaultPrices, parseDefaultGarmentPrices } from "@/lib/shop-settings";
 import { getLatestMeasurementForPrefill } from "@/lib/measurement-prefill";
+import { getLatestCoatMeasurementForPrefill } from "@/lib/coat-measurement-prefill";
 import { en } from "@/lib/locale";
 import type { Metadata } from "next";
 
@@ -39,14 +40,19 @@ export default async function NewOrderPage({
   // itself was found — an offline-created, not-yet-synced customer
   // simply has no server-side measurement to prefill from yet, same as
   // any other genuinely brand-new synced customer.
-  const [prefillMeasurement, pocketOptions, pattiOptions, shopSettings] = await Promise.all([
+  const [prefillMeasurement, prefillCoatMeasurement, pocketOptions, pattiOptions, panchaOptions, shopSettings] = await Promise.all([
     getLatestMeasurementForPrefill(params.customerId),
+    getLatestCoatMeasurementForPrefill(params.customerId),
     prisma.designOption.findMany({
       where: { category: "POCKET", isActive: true },
       orderBy: { sortOrder: "asc" },
     }),
     prisma.designOption.findMany({
       where: { category: "PATTI", isActive: true },
+      orderBy: { sortOrder: "asc" },
+    }),
+    prisma.designOption.findMany({
+      where: { category: "PANCHA", isActive: true },
       orderBy: { sortOrder: "asc" },
     }),
     prisma.shopSettings.findUnique({ where: { singleton: true } }),
@@ -66,11 +72,14 @@ export default async function NewOrderPage({
           customerId={params.customerId}
           customerExists={customerExists}
           measurement={prefillMeasurement}
+          coatMeasurement={prefillCoatMeasurement}
           pocketOptions={pocketOptions}
           pattiOptions={pattiOptions}
+          panchaOptions={panchaOptions}
           error={error}
           defaultAdvancePercent={shopSettings?.defaultAdvancePercent?.toString() ?? null}
           defaultPrices={parseDefaultPrices(shopSettings?.defaultPrices)}
+          defaultGarmentPrices={parseDefaultGarmentPrices(shopSettings?.defaultPrices)}
         />
       </PageContainer>
     </main>

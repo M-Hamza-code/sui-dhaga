@@ -145,22 +145,42 @@ export async function applyCustomerUpdateSync(input: {
     existing.phoneSecondary === targetPhoneSecondary &&
     existing.address === targetAddress;
 
-  if (existing.updatedAt.toISOString() !== input.baseUpdatedAt) {
-    if (alreadyMatches) {
-      return { ok: true, updatedAt: existing.updatedAt.toISOString() };
-    }
-    return { ok: false, reason: "conflict", serverUpdatedAt: existing.updatedAt.toISOString() };
-  }
-
   if (alreadyMatches) {
-    // Nothing actually changed — a safe no-op, not worth a write.
+    // Nothing actually changed, regardless of baseline — a safe no-op,
+    // not worth a write, and not a conflict even if the baseline is
+    // stale (the desired end state already holds).
     return { ok: true, updatedAt: existing.updatedAt.toISOString() };
   }
 
-  const updated = await prisma.customer.update({
-    where: { id: input.customerId },
+  // Atomic conditional update — a single statement, not a separate
+  // read-then-write, so there is no TOCTOU gap between checking the
+  // version and applying it (the previous `existing` read above is only
+  // used for the content-equality short-circuit; it is never trusted as
+  // the version check itself).
+  const conditional = await prisma.customer.updateMany({
+    where: { id: input.customerId, updatedAt: new Date(input.baseUpdatedAt) },
     data: { name, phonePrimary, phoneSecondary: targetPhoneSecondary, address: targetAddress },
   });
 
+  if (conditional.count !== 1) {
+    const current = await prisma.customer.findUnique({ where: { id: input.customerId } });
+    if (!current || current.deletedAt) {
+      return { ok: false, reason: "not-found" };
+    }
+    const stillMatches =
+      current.name === name &&
+      current.phonePrimary === phonePrimary &&
+      current.phoneSecondary === targetPhoneSecondary &&
+      current.address === targetAddress;
+    if (stillMatches) {
+      // A concurrent request already applied this exact change (or this
+      // is our own retry racing itself) — idempotent success, not a
+      // conflict.
+      return { ok: true, updatedAt: current.updatedAt.toISOString() };
+    }
+    return { ok: false, reason: "conflict", serverUpdatedAt: current.updatedAt.toISOString() };
+  }
+
+  const updated = await prisma.customer.findUniqueOrThrow({ where: { id: input.customerId } });
   return { ok: true, updatedAt: updated.updatedAt.toISOString() };
 }

@@ -7,7 +7,16 @@
 
 import type { Measurement } from "@prisma/client";
 
-type DecimalFieldKey = "length" | "shoulder" | "sleeve" | "neck" | "chest" | "waist" | "hem";
+type DecimalFieldKey =
+  | "length"
+  | "shoulder"
+  | "sleeve"
+  | "armHole"
+  | "kohni"
+  | "neck"
+  | "chest"
+  | "waist"
+  | "hem";
 type ShalwarDecimalFieldKey = "shalwarLength" | "pancha" | "shalwarGheraReady";
 
 interface MeasurementFieldDef<K extends keyof Measurement> {
@@ -20,6 +29,15 @@ export const KAMEEZ_FIELDS: readonly MeasurementFieldDef<DecimalFieldKey>[] = [
   { key: "length", ur: "لمبائی", label: "Length" },
   { key: "shoulder", ur: "تیرا", label: "Shoulder" },
   { key: "sleeve", ur: "بازو", label: "Sleeve" },
+  // Added later — Urdu glyphs are a best-effort transliteration consistent
+  // with this app's existing vocabulary (not sourced from any design
+  // brief, which doesn't cover these two; see work-order-style-labels.ts's
+  // own comment on the same honesty convention for Pocket). armHole reuses
+  // "گھیرا" (the word this app already uses for Hem/circumference) with
+  // "بازو" (already used for Sleeve/arm); kohni is simply the Urdu word
+  // for "elbow". Confirm/correct with the shop owner if these read wrong.
+  { key: "armHole", ur: "بازو کا گھیرا", label: "Arm Hole" },
+  { key: "kohni", ur: "کہنی", label: "Kohni" },
   { key: "neck", ur: "گلا", label: "Neck" },
   { key: "chest", ur: "چھاتی", label: "Chest" },
   { key: "waist", ur: "کمر", label: "Waist" },
