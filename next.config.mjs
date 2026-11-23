@@ -1,6 +1,14 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Lets scripts/run-tests.mjs's spawned `next dev` (its own isolated test
+  // server, a separate port) build into its OWN folder instead of the
+  // plain `.next` the real dev server also writes into. Without this, a
+  // test run that overlaps with `npm run dev` corrupts the shared chunk
+  // manifest and throws a ChunkLoadError in the browser — confirmed to
+  // happen more than once. Unset for every normal `next dev`/`next build`
+  // (including CI/production), so nothing changes there.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   // Phase 12 (Production Configuration Audit / §1 Security) — baseline
   // security response headers. Purely additive: these change nothing
   // about how the app behaves or renders, only what a browser is told
