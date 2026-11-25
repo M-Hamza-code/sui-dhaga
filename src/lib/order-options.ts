@@ -66,7 +66,7 @@ export const DESIGN_OPTION_IMAGES: Record<string, string> = {
   POCKET_B: designImage("Pocket B.jpeg"),
   POCKET_C: designImage("Pocket C.jpeg"),
   POCKET_D: designImage("Pocket D.jpeg"),
-  POCKET_E: designImage("Side Pocket.jpeg"),
+  POCKET_E: designImage("Side pocket.jpeg"),
   PATTI_A: designImage("Chorous Patti.jpeg"),
   PATTI_B: designImage("Nok Daar Patti.jpeg"),
   PATTI_C: designImage("Fold Patti.jpeg"),
